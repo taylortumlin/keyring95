@@ -16,9 +16,20 @@ body{margin:0;min-height:100vh;background:var(--teal);font:12px/1.35 Tahoma,"MS 
 .title{background:linear-gradient(90deg,var(--navy),#1084d0);color:#fff;font-weight:bold;padding:3px 4px 3px 6px;display:flex;align-items:center;gap:6px}
 .title .ctl{margin-left:auto;display:flex;gap:2px}
 .title .ctl span{width:16px;height:14px;font:bold 10px/12px monospace;color:#000;text-align:center}
-.menu{display:flex;gap:2px;padding:2px 2px 3px;flex-wrap:wrap}
-.menu button{background:none;border:0;padding:2px 8px;font:inherit;cursor:pointer}
-.menu button:hover{background:var(--navy);color:#fff}
+/* Menu bar: click a title to open, hover to slide between open menus, Esc / click away closes.
+   Alt+letter opens the menu whose title has that <u>letter</u>; arrows move, Enter picks. */
+.menu{display:flex;padding:2px 2px 3px;position:relative;z-index:20;user-select:none}
+.menu .mi{position:relative}
+.menu .mt{background:none;border:0;padding:2px 7px;font:inherit;color:inherit;cursor:default}
+.menu .mi.open .mt{background:var(--navy);color:#fff}
+.menu .mt:focus-visible{outline:1px dotted #000;outline-offset:-2px}
+.menu .dd{display:none;position:absolute;top:100%;left:0;min-width:200px;padding:3px}
+.menu .mi.open .dd{display:block}
+.menu .dd button{display:flex;width:100%;gap:24px;justify-content:space-between;background:none;border:0;padding:3px 10px 3px 20px;font:inherit;text-align:left;cursor:default;white-space:nowrap}
+.menu .dd button:hover,.menu .dd button:focus{background:var(--navy);color:#fff;outline:0}
+.menu .dd button:disabled{color:var(--lo);text-shadow:1px 1px #fff;background:none}
+.menu .dd kbd{font:inherit}
+.menu .dd hr{border:0;border-top:1px solid var(--lo);border-bottom:1px solid #fff;margin:3px 2px}
 .menu u{text-decoration:underline}
 .body{padding:8px}
 button.b{font:inherit;padding:4px 14px;min-width:76px;border:0;cursor:pointer}
@@ -64,11 +75,21 @@ input[type=text],input[type=password],input[type=date]{font:inherit;border:0;pad
 <div class="win out">
   <div class="title"><span>🔑</span> KeyRing 95 — API Key Manager<span id="demo" class="small" style="color:#ff0" hidden>[DEMO MODE: nothing is real]</span>
     <div class="ctl"><span class="out">_</span><span class="out">□</span><span class="out">×</span></div></div>
-  <div class="menu">
-    <button id="m-refresh"><u>F</u>ile ▸ Refresh</button>
-    <button id="m-scan"><u>T</u>ools ▸ Scan for stray keys…</button>
-    <button id="m-keys"><u>H</u>elp ▸ Supported keys</button>
-    <button id="m-about">About</button>
+  <div class="menu" role="menubar">
+    <div class="mi"><button class="mt" aria-haspopup="true" aria-expanded="false"><u>F</u>ile</button>
+      <div class="dd out" role="menu">
+        <button role="menuitem" id="m-refresh"><span><u>R</u>efresh</span><kbd>F5</kbd></button>
+      </div></div>
+    <div class="mi"><button class="mt" aria-haspopup="true" aria-expanded="false"><u>T</u>ools</button>
+      <div class="dd out" role="menu">
+        <button role="menuitem" id="m-scan"><span><u>S</u>can for stray keys…</span></button>
+      </div></div>
+    <div class="mi"><button class="mt" aria-haspopup="true" aria-expanded="false"><u>H</u>elp</button>
+      <div class="dd out" role="menu">
+        <button role="menuitem" id="m-keys"><span>Supported <u>k</u>eys…</span></button>
+        <hr>
+        <button role="menuitem" id="m-about"><span><u>A</u>bout KeyRing 95</span></button>
+      </div></div>
   </div>
   <div class="body">
     <fieldset><legend>Keys</legend>
@@ -278,6 +299,7 @@ $('#m-keys').onclick = () => dialog('Supported keys', `KeyRing recognises these 
   <ul>${Object.entries(state.providers).map(([id, p]) => `<li>${p.scan ? '✔' : '&nbsp;&nbsp;&nbsp;'} <b>${esc(p.name)}</b> <code>${esc(p.example)}</code>${p.scan ? '' : ' <span class="small">(no telltale prefix: rotate only)</span>'} <span class="small">"provider": "${esc(id)}"</span></li>`).join('')}</ul>
   Set <code>"provider"</code> on an app in <code>config.json</code>. Want another? A provider is one regex and one test call.`);
 $('#m-refresh').onclick = () => refresh();
+document.addEventListener('keydown', e => { if (e.key === 'F5' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); refresh(); } });
 $('#m-about').onclick = () => dialog('About KeyRing 95', `<b>KeyRing 95 v${esc(state.version)}</b><br>Finds, rotates and age-tracks the API keys your self-hosted apps use.<br><br>
   Keys are never stored, only fingerprints and dates. Each rotation tests the key first, rewrites the env file, restarts the app and checks it's healthy, and rolls back if it isn't.<br><br>
   A key is due at its expiry or ${state.rotate_days ?? 90} days after rotation, whichever comes first. Point your uptime monitor at <code>/health</code>; it goes red ${state.warn_days ?? 14} days ahead.`);
@@ -290,6 +312,50 @@ async function refresh() {
   render();
 }
 refresh();
+// ---- Win95 menu bar ----
+(function initMenus(bar) {
+  const items = [...bar.querySelectorAll('.mi')];
+  const entries = mi => [...mi.querySelectorAll('.dd button:not(:disabled)')];
+  let open = null;
+  function show(mi, focusFirst) {
+    if (open && open !== mi) open.classList.remove('open');
+    open = mi; mi.classList.add('open');
+    mi.querySelector('.mt').setAttribute('aria-expanded', 'true');
+    if (focusFirst) entries(mi)[0]?.focus();
+  }
+  function close() {
+    if (!open) return;
+    open.classList.remove('open'); open.querySelector('.mt').setAttribute('aria-expanded', 'false'); open = null;
+  }
+  items.forEach(mi => {
+    const t = mi.querySelector('.mt');
+    t.addEventListener('mousedown', e => { e.preventDefault(); open === mi ? close() : show(mi); });
+    t.addEventListener('click', e => { if (e.detail === 0) open === mi ? close() : show(mi, true); }); // keyboard Enter/Space
+    t.addEventListener('mouseenter', () => { if (open && open !== mi) show(mi); });
+    mi.querySelectorAll('.dd button').forEach(b => {
+      b.addEventListener('mouseenter', () => b.focus());
+      b.addEventListener('click', () => close());
+    });
+  });
+  document.addEventListener('mousedown', e => { if (open && !bar.contains(e.target)) close(); });
+  window.addEventListener('blur', close);
+  document.addEventListener('keydown', e => {
+    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+      const mi = items.find(m => m.querySelector('.mt u')?.textContent.toLowerCase() === e.key.toLowerCase());
+      if (mi) { e.preventDefault(); return show(mi, true); }
+    }
+    if (!open) return;
+    const list = entries(open), i = list.indexOf(document.activeElement), at = items.indexOf(open);
+    const keys = {
+      Escape: () => { const t = open.querySelector('.mt'); close(); t.focus(); },
+      ArrowDown: () => list[(i + 1) % list.length]?.focus(),
+      ArrowUp: () => list[(i - 1 + list.length) % list.length]?.focus(),
+      ArrowRight: () => show(items[(at + 1) % items.length], true),
+      ArrowLeft: () => show(items[(at - 1 + items.length) % items.length], true),
+    };
+    if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
+  });
+})(document.querySelector('.menu'));
 </script>
 </body>
 </html>

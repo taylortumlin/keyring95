@@ -2,6 +2,11 @@
 
 All notable changes to KeyRing 95. Versions follow [semver](https://semver.org), loosely, because we're very early.
 
+## [0.1.1] - 2026-10-13
+
+### Changed
+- The menu bar is a real menu bar now: File / Tools / Help open dropdowns. Click to open, hover to slide between menus, arrow keys and Enter to pick, Esc or click away to close, Alt+F/T/H from anywhere. F5 refreshes.
+
 ## [0.1.0] - 2026-10-12
 
 *Same day. Turns out you have more than one kind of key.*
@@ -39,5 +44,6 @@ All notable changes to KeyRing 95. Versions follow [semver](https://semver.org),
 - HTTP Basic auth (PBKDF2), client network allow-list, no keys at rest, no request logging
 - `install.sh` for Proxmox VE hosts
 
+[0.1.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.1
 [0.1.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.0
 [0.0.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.0.1
