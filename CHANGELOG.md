@@ -2,6 +2,23 @@
 
 All notable changes to KeyRing 95. Versions follow [semver](https://semver.org), loosely, because we're very early.
 
+## [0.1.0] - 2026-10-12
+
+*Same day. Turns out you have more than one kind of key.*
+
+### Added
+- **12 more providers:** OpenAI, Google (Gemini), Groq, xAI, OpenRouter, Mistral, Hugging Face, ElevenLabs, Resend, SendGrid, Stripe and GitHub tokens. Set `"provider"` per app.
+- **Scan reads env files on disk too**, not just running processes. Apps that load `.env` with dotenv were invisible before.
+- Scan results are grouped into **not tracked**, **only in backup copies** (old keys in `.bak` files) and **tracked**, and list every process and file each key turned up in
+- **Test Key** works out the provider from the key itself, and says so when you paste the wrong kind ("That looks like a Groq key, but these apps use Anthropic")
+- The paste box shows what the selected apps' keys look like
+- **Help ▸ Supported keys**
+- Demo mode has OpenAI and Resend apps, plus stray Groq, Stripe and GitHub keys and an old OpenAI key in a backup file
+
+### Fixed
+- Provider test calls send a `keyring95/<version>` User-Agent; some APIs refuse Python's default
+- A key shared by two apps is reported as tracked by both, not just one
+
 ## [0.0.1] - 2026-10-12
 
 *A.k.a. v.000000000001. The "it works on my homelab" release.*
@@ -22,4 +39,5 @@ All notable changes to KeyRing 95. Versions follow [semver](https://semver.org),
 - HTTP Basic auth (PBKDF2), client network allow-list, no keys at rest, no request logging
 - `install.sh` for Proxmox VE hosts
 
+[0.1.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.0
 [0.0.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.0.1

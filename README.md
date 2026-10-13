@@ -4,16 +4,16 @@
 
 ![KeyRing 95 in demo mode](docs/screenshot.png)
 
-You run a homelab. A dozen containers each have an `ANTHROPIC_API_KEY` in some `.env` file. Half of them share a key, nobody remembers which key is called `test2`, and none have been rotated since you made them. KeyRing 95 fixes that:
+You run a homelab. A dozen containers each have an `ANTHROPIC_API_KEY`, an `OPENAI_API_KEY` or a Stripe key in some `.env` file. Half of them share a key, nobody remembers which key is called `test2`, and none have been rotated since you made them. KeyRing 95 fixes that:
 
-- **Finds them.** It reads each app's key and shows its fingerprint exactly as your provider's console does (`sk-ant-api03-7gS…jgAA`), so you can match them up. Keys shared between apps get flagged. **Scan for stray keys** checks every running container for keys you haven't registered.
+- **Finds them.** It reads each app's key and shows its fingerprint exactly as your provider's console does (`sk-ant-api03-7gS…jgAA`), so you can match them up. Keys shared between apps get flagged. **Scan for stray keys** checks every running container, both process environments and env files on disk, for keys of [13 providers](#supported-keys) you haven't registered, and points out old keys still sitting in `.env.bak` copies.
 - **Rotates them.** Paste a new key and pick the apps. For each one it tests the key with the provider, rewrites the env file in place, restarts the app and checks it came back healthy. **If the app doesn't come back, it puts the old key back.** Then it tells you which old keys nothing uses any more, so you can delete them.
 - **Reminds you.** Each key is due at its expiry date or N days after rotation (default 90), whichever comes first. `GET /health` returns `503 KEYS DUE: …` two weeks ahead. Point Uptime Kuma (or any monitor) at it.
 - **Tracks the ones it can't reach.** Keys in n8n, GitHub Actions or a laptop are listed too, marked *update by hand*, with a **Mark done** button.
 
 It's one Python file using only the standard library, plus one HTML file. No database, no pip, no Docker.
 
-> **v0.0.1:** Proxmox VE containers + Anthropic keys. More providers and more places to run are next. See the [roadmap](ROADMAP.md).
+> **v0.1.0:** Proxmox VE containers, 13 providers. More places to run are next. See the [roadmap](ROADMAP.md).
 
 ## Try it (10 seconds, no Proxmox needed)
 
@@ -23,7 +23,7 @@ python3 keyring95.py demo
 # open http://127.0.0.1:8099
 ```
 
-Demo mode fakes four apps (two sharing a key), two hand-updated keys and a stray key for the scan. Any key starting with `sk-ant-api03-` works; put `bad` in it to see the rejection.
+Demo mode fakes six apps across three providers (two sharing a key), two hand-updated keys, and stray Groq, Stripe, GitHub and backed-up OpenAI keys for the scan. Any key of the right shape works; put `bad` in it to see the rejection.
 
 ## Install (Proxmox VE host)
 
@@ -57,7 +57,7 @@ Each app:
 | Field | |
 |---|---|
 | `id` | Name shown in the UI |
-| `provider` | `anthropic` (default; more coming) |
+| `provider` | One of the [supported keys](#supported-keys) below (default `anthropic`) |
 | `ct` | Proxmox container ID |
 | `file` | Env file holding the key |
 | `var` | Variable name, e.g. `ANTHROPIC_API_KEY` (matches `VAR=`, `export VAR=`, quoted or not) |
@@ -75,9 +75,33 @@ Recipes for `reload`/`check`:
 
 Compose reads `env_file` when it creates the container, so a plain `docker restart` keeps the old key. Recreate it.
 
+## Supported keys
+
+| `provider` | Key looks like | Test call (read-only, free) |
+|---|---|---|
+| `anthropic` | `sk-ant-api03-…` | `GET /v1/models` |
+| `openai` | `sk-proj-…`, `sk-svcacct-…` | `GET /v1/models` |
+| `google` | `AIza…` (Gemini) | `GET /v1beta/models` |
+| `groq` | `gsk_…` | `GET /openai/v1/models` |
+| `xai` | `xai-…` | `GET /v1/models` |
+| `openrouter` | `sk-or-v1-…` | `GET /api/v1/key` |
+| `mistral` | 32 letters and digits (rotate only, the scan can't spot it) | `GET /v1/models` |
+| `huggingface` | `hf_…` | `GET /api/whoami-v2` |
+| `elevenlabs` | `sk_…` | `GET /v1/user` |
+| `resend` | `re_…` | `GET /domains` (send-only keys accepted) |
+| `sendgrid` | `SG.…` | `GET /v3/scopes` |
+| `stripe` | `sk_live_…`, `rk_live_…` | `GET /v1/balance` (restricted keys accepted) |
+| `github` | `github_pat_…`, `ghp_…` | `GET /user` |
+
+**Help ▸ Supported keys** shows the same list in the app.
+
+### What the scan looks at
+
+Every running container's process environments (`/proc/*/environ`), plus env-ish files (`.env*`, `*.env`, `env`, compose files, systemd units and drop-ins, `*.conf`, `config.json`) up to four levels under `/opt`, `/srv`, `/etc`, `/var/lib`, `/root`, `/home` and `/usr/local`. Apps that load `.env` themselves (dotenv) never show the key in their environment, so the file pass catches them. Results come in three groups: **not tracked**, **only in backup copies** (old keys left in `.bak` files), and **tracked**.
+
 ## How a rotation works
 
-1. Checks the pasted key's format and makes one cheap, authenticated call to the provider (Anthropic: `GET /v1/models`).
+1. Checks the pasted key's format and makes one cheap, authenticated call to the provider (e.g. Anthropic: `GET /v1/models`). If the key is the wrong kind, say an OpenAI key for an Anthropic app, it tells you so.
 2. For each selected app: reads the env file and swaps only the key on the `VAR=` line. The write uses `cat >`, which keeps the file's owner, group and mode, and strips world-read access if it was set.
 3. Runs `reload`, waits, runs `check`. If either fails, it restores the original file, reloads again and reports the failure.
 4. Records the date, key name and expiry. Lists old keys no app uses any more.
@@ -92,7 +116,7 @@ Compose reads `env_file` when it creates the container, so a plain `docker resta
 
 ## Status
 
-v0.0.1 has been used to rotate the Anthropic keys of 8 apps across 7 containers on one homelab, covering systemd, pm2 and docker compose apps. It's small and young. Read the code (it's ~450 lines) before trusting it with production.
+v0.0.1 rotated the Anthropic keys of 8 apps across 7 containers on one homelab, covering systemd, pm2 and docker compose apps. v0.1.0's scan covers 38 containers in about 10 seconds. It's small and young. Read the code (it's ~700 lines) before trusting it with production.
 
 ## Contributing
 

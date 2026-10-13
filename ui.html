@@ -67,7 +67,8 @@ input[type=text],input[type=password],input[type=date]{font:inherit;border:0;pad
   <div class="menu">
     <button id="m-refresh"><u>F</u>ile ▸ Refresh</button>
     <button id="m-scan"><u>T</u>ools ▸ Scan for stray keys…</button>
-    <button id="m-about"><u>H</u>elp ▸ About</button>
+    <button id="m-keys"><u>H</u>elp ▸ Supported keys</button>
+    <button id="m-about">About</button>
   </div>
   <div class="body">
     <fieldset><legend>Keys</legend>
@@ -90,7 +91,7 @@ input[type=text],input[type=password],input[type=date]{font:inherit;border:0;pad
       </div>
       <div class="row" style="margin-top:8px">
         <label for="key">New key:</label>
-        <input type="password" id="key" class="in" placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false">
+        <input type="password" id="key" class="in" placeholder="Paste the new key" autocomplete="off" spellcheck="false">
         <label><input type="checkbox" id="show"> Show</label>
       </div>
       <div class="row" style="margin-top:8px">
@@ -182,6 +183,13 @@ function syncControls() {
   const autos = state.apps.filter(a => a.kind === 'auto' && a.fp);
   $('#all').checked = autos.length && autos.every(a => selected.has(a.id));
   $('#cname').placeholder = selected.size === 1 ? [...selected][0] : 'e.g. stockpile';
+  const p = selProvider();
+  $('#key').placeholder = p ? `${state.providers[p].name} key: ${state.providers[p].example}` : 'Paste the new key';
+}
+// The provider of the selected apps; null when nothing (or a mix) is selected.
+function selProvider() {
+  const ps = new Set(state.apps.filter(a => selected.has(a.id)).map(a => a.provider_id));
+  return ps.size === 1 ? [...ps][0] : null;
 }
 
 $('#rows').addEventListener('click', e => {
@@ -232,10 +240,9 @@ async function withBusy(msg, fn) {
   try { return await fn(); } finally { busy = false; progress(false); syncControls(); }
 }
 
-$('#test').onclick = () => withBusy('Testing key with Anthropic…', async () => {
-  const first = state.apps.find(a => selected.has(a.id));
-  const r = await api('/api/test', {key: $('#key').value, provider: first ? first.provider_id : 'anthropic'});
-  dialog('Test Key', esc(r.msg), r.ok ? '✅' : '⛔');
+$('#test').onclick = () => withBusy('Testing key with the provider…', async () => {
+  const r = await api('/api/test', {key: $('#key').value, provider: selProvider()});
+  dialog('Test Key', `<b>${esc(r.provider)}</b><br>${esc(r.msg)}`, r.ok ? '✅' : '⛔');
   $('#sb1').textContent = r.msg;
 });
 
@@ -251,15 +258,25 @@ $('#go').onclick = () => withBusy('Rotating… restarting apps, this takes a few
   await refresh();
 });
 
-$('#m-scan').onclick = () => withBusy('Scanning every running container…', async () => {
+$('#m-scan').onclick = () => withBusy('Scanning every running container: processes and env files…', async () => {
   const r = await api('/api/discover', {});
-  const stray = r.hits.filter(h => !h.known_as);
-  let html = `Scanned ${r.scanned} containers' running processes.<ul>` +
-    r.hits.map(h => `<li>CT ${h.ct} <code>${esc(h.process)}</code> ${esc(h.provider)} ${esc(h.fp.display)}: ${h.known_as ? 'tracked (' + esc(h.known_as) + ')' : '<b class="warn">NOT TRACKED</b>'}</li>`).join('') + '</ul>';
-  if (stray.length) html += 'Add untracked ones to your <code>config.json</code>.';
-  dialog('Scan results', html, stray.length ? '⚠️' : '✅');
-  $('#sb1').textContent = 'Scan complete';
+  const stray = r.hits.filter(h => !h.known_as && !h.backup_only), old = r.hits.filter(h => !h.known_as && h.backup_only);
+  const provs = new Set(r.hits.map(h => h.provider));
+  const where = h => [...h.processes.map(p => `<code>${esc(p)}</code> process`), ...h.files.map(f => `<code>${esc(f)}</code>`)].join(', ');
+  const item = h => `<li>CT ${h.ct} · ${esc(h.provider)} <span class="fp">${esc(h.fp.display)}</span>
+    ${h.known_as ? '· tracked as <b>' + esc(h.known_as) + '</b>' : h.backup_only ? '· <i>only in backups</i>' : '· <b class="warn">NOT TRACKED</b>'}
+    <div class="small wrap">${where(h)}</div></li>`;
+  let html = `Scanned ${r.scanned} containers: running processes and env files.<br>Found <b>${r.hits.length}</b> keys from <b>${provs.size}</b> providers.`;
+  if (stray.length) html += `<p><b class="warn">Not tracked (${stray.length})</b>: add them to <code>config.json</code> so they get rotated and reminded.</p><ul>${stray.map(item).join('')}</ul>`;
+  if (old.length) html += `<p><b>Only in backup copies (${old.length})</b>: probably old keys. Delete them at the provider, or delete the files.</p><ul>${old.map(item).join('')}</ul>`;
+  const known = r.hits.filter(h => h.known_as);
+  if (known.length) html += `<p><b>Tracked (${known.length})</b></p><ul>${known.map(item).join('')}</ul>`;
+  dialog('Scan results', `<div style="max-height:60vh;overflow:auto">${html}</div>`, stray.length ? '⚠️' : '✅');
+  $('#sb1').textContent = `Scan complete: ${stray.length} untracked, ${old.length} in backups only`;
 });
+$('#m-keys').onclick = () => dialog('Supported keys', `KeyRing recognises these keys. ✔ = the scan can spot them by shape.
+  <ul>${Object.entries(state.providers).map(([id, p]) => `<li>${p.scan ? '✔' : '&nbsp;&nbsp;&nbsp;'} <b>${esc(p.name)}</b> <code>${esc(p.example)}</code>${p.scan ? '' : ' <span class="small">(no telltale prefix: rotate only)</span>'} <span class="small">"provider": "${esc(id)}"</span></li>`).join('')}</ul>
+  Set <code>"provider"</code> on an app in <code>config.json</code>. Want another? A provider is one regex and one test call.`);
 $('#m-refresh').onclick = () => refresh();
 $('#m-about').onclick = () => dialog('About KeyRing 95', `<b>KeyRing 95 v${esc(state.version)}</b><br>Finds, rotates and age-tracks the API keys your self-hosted apps use.<br><br>
   Keys are never stored, only fingerprints and dates. Each rotation tests the key first, rewrites the env file, restarts the app and checks it's healthy, and rolls back if it isn't.<br><br>

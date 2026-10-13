@@ -20,16 +20,17 @@ Every UI change can be tried in demo mode. If you add a runner or provider, make
 Add an entry to `PROVIDERS` in `keyring95.py`:
 
 ```python
-"openai": {
-    "name": "OpenAI",
-    "pattern": r"sk-(proj-)?[A-Za-z0-9_-]{20,}",   # POSIX ERE: it's also passed to grep -E
-    "display": r"(sk-(?:proj-)?)(.{3})",            # how the provider's console abbreviates keys
-    "test": lambda k: _http_ok("https://api.openai.com/v1/models", {"Authorization": f"Bearer {k}"}),
+"groq": {
+    "name": "Groq", "example": "gsk_…",
+    "pattern": r"gsk_[A-Za-z0-9]{40,}",   # POSIX ERE: it's also passed to grep -E
+    "display": r"(gsk_)(.{3})",           # how the provider's console abbreviates keys
+    "test": _bearer("https://api.groq.com/openai/v1/models"),
 },
 ```
 
 - `pattern` must be POSIX ERE (no `\d`, `\w`); discovery hands it to `grep -E` inside containers.
-- `test` must be **cheap and read-only**. Listing models is ideal. Never spend tokens.
+- Keep the prefix specific: the scan greps every env file, and a loose pattern floods it with false hits. Keys with no telltale shape get `"scan": False` (rotate only).
+- `test` must be **cheap and read-only**. Listing models is ideal. Never spend tokens. `also_ok` handles answers that still prove the key is real (e.g. a send-only key refused a read endpoint).
 - Add a row to the README and tick the box in ROADMAP.md.
 
 ## Adding a runner

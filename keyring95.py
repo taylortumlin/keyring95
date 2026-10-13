@@ -13,7 +13,7 @@ import subprocess, sys, tempfile, threading, time, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.environ.get("KEYRING_CONFIG") or next(
     (p for p in ("/etc/keyring95/config.json", os.path.join(HERE, "config.json")) if os.path.exists(p)),
@@ -29,26 +29,133 @@ DEMO = False
 # A provider knows what its keys look like and how to prove a key works.
 # Adding one = one entry here. See ROADMAP.md for the ones queued up.
 
-def _http_ok(url, headers):
-    req = urllib.request.Request(url, headers=headers)
+def _http_ok(url, headers, also_ok=None):
+    """One authenticated GET. also_ok: {status: (body substring, message)} for answers that
+    still prove the key is real, e.g. a send-only key refused a read endpoint."""
+    req = urllib.request.Request(url, headers={"User-Agent": f"keyring95/{__version__}", **headers})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             return r.status == 200, "Key works"
     except urllib.error.HTTPError as e:
-        return False, {401: "Provider rejected this key (401)", 403: "Key lacks permission (403)"}.get(e.code, f"HTTP {e.code}")
+        body = e.read(2000).decode("utf-8", "replace")
+        hint, msg = (also_ok or {}).get(e.code, (None, None))
+        if hint is not None and hint in body:
+            return True, msg
+        return False, {400: "Provider rejected this key (400)", 401: "Provider rejected this key (401)",
+                       403: "Key lacks permission (403)"}.get(e.code, f"HTTP {e.code}")
     except Exception as e:  # network trouble is not the key's fault; say so
         return False, f"Could not reach the provider: {e}"
 
 
+def _bearer(url, **kw):
+    return lambda k: _http_ok(url, {"Authorization": f"Bearer {k}"}, **kw)
+
+
+# pattern: POSIX ERE, because discovery also feeds it to `grep -E`. Keep prefixes specific so the
+#   scan doesn't flag random strings. scan=False for keys with no recognisable shape (rotate-only).
+# display: how the provider's console abbreviates a key (prefix group + 3 chars, then …last4).
+# example: placeholder for the paste box.
 PROVIDERS = {
     "anthropic": {
-        "name": "Anthropic (Claude)",
-        "pattern": r"sk-ant-api[0-9]*-[A-Za-z0-9_-]{20,}",  # POSIX ERE: also fed to grep -E
+        "name": "Anthropic (Claude)", "example": "sk-ant-api03-…",
+        "pattern": r"sk-ant-api[0-9]*-[A-Za-z0-9_-]{20,}",
         "display": r"(sk-ant-api\d*-)(.{3})",  # mirrors the Console: sk-ant-api03-7gS…jgAA
         "test": lambda k: _http_ok("https://api.anthropic.com/v1/models?limit=1",
                                    {"x-api-key": k, "anthropic-version": "2023-06-01"}),
     },
+    "openai": {
+        "name": "OpenAI", "example": "sk-proj-…",
+        "pattern": r"sk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}",
+        "display": r"(sk-(?:proj-|svcacct-|admin-)?)(.{3})",
+        "test": _bearer("https://api.openai.com/v1/models"),
+    },
+    "google": {
+        "name": "Google (Gemini)", "example": "AIza…",
+        "pattern": r"AIza[0-9A-Za-z_-]{35}",
+        "display": r"(AIza)(.{3})",
+        "test": lambda k: _http_ok("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+                                   {"x-goog-api-key": k}),
+    },
+    "groq": {
+        "name": "Groq", "example": "gsk_…",
+        "pattern": r"gsk_[A-Za-z0-9]{40,}",
+        "display": r"(gsk_)(.{3})",
+        "test": _bearer("https://api.groq.com/openai/v1/models"),
+    },
+    "xai": {
+        "name": "xAI (Grok)", "example": "xai-…",
+        "pattern": r"xai-[A-Za-z0-9]{40,}",
+        "display": r"(xai-)(.{3})",
+        "test": _bearer("https://api.x.ai/v1/models"),
+    },
+    "openrouter": {
+        "name": "OpenRouter", "example": "sk-or-v1-…",
+        "pattern": r"sk-or-v1-[a-f0-9]{64}",
+        "display": r"(sk-or-v1-)(.{3})",
+        "test": _bearer("https://openrouter.ai/api/v1/key"),  # /models is public; /key needs auth
+    },
+    "mistral": {
+        "name": "Mistral", "example": "32 letters and digits", "scan": False,
+        "pattern": r"[A-Za-z0-9]{32}",
+        "test": _bearer("https://api.mistral.ai/v1/models"),
+    },
+    "huggingface": {
+        "name": "Hugging Face", "example": "hf_…",
+        "pattern": r"hf_[A-Za-z0-9]{30,}",
+        "display": r"(hf_)(.{3})",
+        "test": _bearer("https://huggingface.co/api/whoami-v2"),
+    },
+    "elevenlabs": {
+        "name": "ElevenLabs", "example": "sk_…",
+        "pattern": r"sk_[a-f0-9]{48}",
+        "display": r"(sk_)(.{3})",
+        "test": lambda k: _http_ok("https://api.elevenlabs.io/v1/user", {"xi-api-key": k},
+                                   also_ok={401: ("missing_permissions", "Key works (scoped key)")}),
+    },
+    "resend": {
+        "name": "Resend", "example": "re_…",
+        "pattern": r"re_[A-Za-z0-9]{8}_[A-Za-z0-9]{24}",
+        "display": r"(re_)(.{3})",
+        "test": _bearer("https://api.resend.com/domains",
+                        also_ok={401: ("restricted_api_key", "Key works (sending-only key)")}),
+    },
+    "sendgrid": {
+        "name": "SendGrid", "example": "SG.…",
+        "pattern": r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
+        "display": r"(SG\.)(.{3})",
+        "test": _bearer("https://api.sendgrid.com/v3/scopes"),
+    },
+    "stripe": {
+        "name": "Stripe", "example": "sk_live_… or rk_live_…",
+        "pattern": r"(sk|rk)_(live|test)_[A-Za-z0-9]{20,}",
+        "display": r"([sr]k_(?:live|test)_)(.{3})",
+        "test": _bearer("https://api.stripe.com/v1/balance",
+                        also_ok={403: ("", "Key works (restricted key)")}),
+    },
+    "github": {
+        "name": "GitHub token", "example": "github_pat_… or ghp_…",
+        "pattern": r"ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}",
+        "display": r"(ghp_|github_pat_)(.{3})",
+        "test": _bearer("https://api.github.com/user"),
+    },
 }
+
+
+def detect(key):
+    """Which provider a pasted or found key belongs to, judged by its shape."""
+    return next((pid for pid, p in PROVIDERS.items()
+                 if p.get("scan", True) and re.fullmatch(p["pattern"], key)), None)
+
+
+def shape_error(key, pid):
+    """None if the key fits provider pid, else a message that names what it looks like instead."""
+    if re.fullmatch(PROVIDERS[pid]["pattern"], key):
+        return None
+    a = lambda n: ("an " if n[0] in "AEIOU" else "a ") + n
+    other = detect(key)
+    if other:
+        return f"That looks like {a(PROVIDERS[other]['name'])} key, but these apps use {PROVIDERS[pid]['name']}."
+    return f"That doesn't look like {a(PROVIDERS[pid]['name'])} key."
 
 
 def provider(app):
@@ -62,6 +169,11 @@ def fingerprint(key, prov):
 
 
 def test_key(key, prov):
+    if isinstance(prov, str):  # a provider id: check the shape before calling anyone
+        err = shape_error(key, prov)
+        if err:
+            return False, err
+        prov = PROVIDERS[prov]
     if DEMO:
         ok = re.fullmatch(prov["pattern"], key) and "bad" not in key
         return bool(ok), "Key works (demo)" if ok else "Provider rejected this key (demo)"
@@ -93,18 +205,34 @@ def list_hosts():
 # ---------- demo mode ----------
 
 DEMO_FILES = {}
+DEMO_STRAYS = []
+
+
+def demo_key(pid, tag):
+    h = hashlib.sha256(tag.encode()).hexdigest()
+    return {"anthropic": f"sk-ant-api03-{h[:40]}AA", "openai": f"sk-proj-{h[:48]}",
+            "resend": f"re_{h[:8]}_{h[8:32]}", "groq": f"gsk_{h[:52]}", "github": f"ghp_{h[:36]}",
+            "stripe": f"sk_live_{h[:32]}"}[pid]
 
 
 def demo_config():
-    k = lambda tag: "sk-ant-api03-" + hashlib.sha256(tag.encode()).hexdigest()[:40] + "AA"
-    apps = [("chatbot", 101, "/opt/chatbot/.env", "shared"), ("notes-ai", 102, "/var/lib/notes/.env", "shared"),
-            ("recipe-scanner", 103, "/srv/recipes/.env", "recipes"), ("support-bot", 104, "/etc/support-bot/env", "support")]
-    for _, ct, f, tag in apps:
-        DEMO_FILES[(ct, f)] = f"PORT=3000\nANTHROPIC_API_KEY={k(tag)}\n"
-    DEMO_FILES[(105, "/proc")] = k("stray")  # a key no app is registered for, for the scan
+    apps = [("chatbot", 101, "/opt/chatbot/.env", "shared", "anthropic", "ANTHROPIC_API_KEY"),
+            ("notes-ai", 102, "/var/lib/notes/.env", "shared", "anthropic", "ANTHROPIC_API_KEY"),
+            ("recipe-scanner", 103, "/srv/recipes/.env", "recipes", "anthropic", "ANTHROPIC_API_KEY"),
+            ("support-bot", 104, "/etc/support-bot/env", "support", "anthropic", "ANTHROPIC_API_KEY"),
+            ("voice-agent", 106, "/opt/voice/.env", "voice", "openai", "OPENAI_API_KEY"),
+            ("mailer", 107, "/opt/mailer/.env", "mail", "resend", "RESEND_API_KEY")]
+    for _, ct, f, tag, pid, var in apps:
+        DEMO_FILES[(ct, f)] = f"PORT=3000\n{var}={demo_key(pid, tag)}\n"
+    # Keys no app is registered for, so the scan has something to find.
+    DEMO_STRAYS.extend([(101, "P", "python", demo_key("groq", "stray")),
+                        (106, "F", "/opt/voice/.env.bak-2026-03", demo_key("openai", "old-voice")),
+                        (107, "F", "/opt/shop/docker-compose.yml", demo_key("stripe", "shop")),
+                        (103, "F", "/root/.config/gh/env", demo_key("github", "ci"))])
     return {"rotate_days": 90, "warn_days": 14,
-            "apps": [{"id": i, "ct": ct, "file": f, "var": "ANTHROPIC_API_KEY",
-                      "reload": f"systemctl restart {i}", "check": f"systemctl is-active {i}"} for i, ct, f, _ in apps],
+            "apps": [{"id": i, "ct": ct, "file": f, "var": var, "provider": pid,
+                      "reload": f"systemctl restart {i}", "check": f"systemctl is-active {i}"}
+                     for i, ct, f, _, pid, var in apps],
             "manual": [{"id": "workflow-tool", "where": "Workflow tool UI → Credentials → paste → Save"},
                        {"id": "ci-secrets", "where": "GitHub → repo Settings → Secrets → ANTHROPIC_API_KEY"}]}
 
@@ -120,10 +248,12 @@ def demo_run(app, script, stdin):
         body = DEMO_FILES.get((app["ct"], m.group(1)))
         return (0, body, "") if body else (1, "", "No such file")
     if "/proc/" in script:
-        hits = [f"node {DEMO_FILES[(ct, f)].split('API_KEY=')[1].strip()}" for (ct, f) in DEMO_FILES
-                if ct == app["ct"] and f != "/proc"]
-        if app["ct"] == 101:
-            hits.append("python " + DEMO_FILES[(105, "/proc")])
+        hits = []
+        for (ct, f), body in DEMO_FILES.items():
+            if ct == app["ct"]:
+                k = body.strip().splitlines()[-1].split("=", 1)[1]
+                hits += [f"P node {k}", f"F {f} {k}"]
+        hits += [f"{kind} {where} {k}" for ct, kind, where, k in DEMO_STRAYS if ct == app["ct"]]
         return 0, "\n".join(hits), ""
     return 0, "active", ""
 
@@ -249,7 +379,9 @@ def snapshot():
     for a in apps:
         a["shared_with"] = [x for x in shared.get(a["fp"]["hash"], []) if x != a["id"]] if a.get("fp") else []
     return {"apps": apps, "log": st["log"][:60], "rotate_days": cfg["rotate_days"], "warn_days": cfg["warn_days"],
-            "version": __version__, "demo": DEMO}
+            "version": __version__, "demo": DEMO,
+            "providers": {pid: {"name": p["name"], "example": p["example"], "scan": p.get("scan", True)}
+                          for pid, p in PROVIDERS.items()}}
 
 
 def rotate(key, ids, key_name, expires_at=None):
@@ -263,8 +395,10 @@ def rotate(key, ids, key_name, expires_at=None):
     if len(provs) > 1:
         return {"ok": False, "error": "Those apps use different providers; rotate them separately."}
     prov = next(iter(provs.values()))
-    if not re.fullmatch(prov["pattern"], key):
-        return {"ok": False, "error": f"That doesn't look like a {prov['name']} key."}
+    pid = chosen[0].get("provider", "anthropic")
+    err = shape_error(key, pid)
+    if err:
+        return {"ok": False, "error": err}
     ok, why = test_key(key, prov)
     if not ok:
         return {"ok": False, "error": why}
@@ -349,32 +483,57 @@ def edit(app_id, fields):
     return {"ok": True}
 
 
+# Where scan looks on disk: env-ish files under the usual app homes. Apps that load .env
+# themselves (dotenv) never show the key in /proc/*/environ, so processes alone miss them.
+SCAN_DIRS = "/opt /srv /etc /var/lib /root /home /usr/local"
+SCAN_NAMES = ("'.env*' '*.env' env 'docker-compose*.y*ml' 'compose*.y*ml' '*.service' "
+              "'config.json' 'secrets*' '*.conf'")
+
+
 def discover():
-    """Scan every host's live process environments for keys no app is registered for."""
-    known = {a["fp"]["hash"]: a["id"] for a in snapshot()["apps"] if a.get("fp")}
-    pattern = "|".join(f"({p['pattern']})" for p in PROVIDERS.values())
-    script = ("for p in /proc/[0-9]*; do c=$(cat $p/comm 2>/dev/null); "
-              "tr '\\0' '\\n' < $p/environ 2>/dev/null | grep -oE '" + pattern + "' | "
-              "while read -r k; do echo \"$c $k\"; done; done | sort -u")
+    """Scan every host for keys: live process environments plus env files on disk."""
+    known = {}
+    for a in snapshot()["apps"]:
+        if a.get("fp"):
+            known.setdefault(a["fp"]["hash"], []).append(a["id"])
+    pattern = "|".join(f"({p['pattern']})" for p in PROVIDERS.values() if p.get("scan", True))
+    names = " -o ".join(f"-name {n}" for n in SCAN_NAMES.split())
+    script = (
+        "{ for p in /proc/[0-9]*; do c=$(cat $p/comm 2>/dev/null); "
+        "tr '\\0' '\\n' < $p/environ 2>/dev/null | grep -oE '" + pattern + "' | "
+        "while read -r k; do echo \"P $c $k\"; done; done; "
+        f"find {SCAN_DIRS} -maxdepth 4 \\( -name node_modules -o -name .git -o -name docker "
+        f"-o -name containers -o -name lxcfs \\) -prune -o -type f \\( {names} \\) -size -512k -print0 "
+        "2>/dev/null | xargs -0 -r grep -HoE '" + pattern + "' 2>/dev/null | "
+        "while IFS= read -r l; do echo \"F ${l%:*} ${l##*:}\"; done; } | sort -u")
 
     def scan(host):
         try:
-            _, out, _ = run(host, script, timeout=40)
+            _, out, _ = run(host, script, timeout=90)
         except Exception:
             return []
-        found = []
+        keys = {}  # one row per key per host, listing every place it turned up
         for line in out.splitlines():
-            comm, _, k = line.rpartition(" ")
-            prov = next((p for p in PROVIDERS.values() if re.fullmatch(p["pattern"], k)), None)
-            if prov:
-                fp = fingerprint(k, prov)
-                found.append({"ct": host["ct"], "process": comm, "fp": fp, "provider": prov["name"],
-                              "known_as": known.get(fp["hash"])})
-        return found
+            kind, rest = line[:1], line[2:]
+            where, _, k = rest.rpartition(" ")
+            pid = detect(k)
+            if not pid:
+                continue
+            fp = fingerprint(k, PROVIDERS[pid])
+            hit = keys.setdefault(fp["hash"], {"ct": host["ct"], "fp": fp, "provider": PROVIDERS[pid]["name"],
+                                               "provider_id": pid, "known_as": ", ".join(known.get(fp["hash"], [])) or None,
+                                               "processes": [], "files": []})
+            hit["processes" if kind == "P" else "files"].append(where)
+        for h in keys.values():
+            h["processes"] = sorted(set(h["processes"]))
+            h["backup_only"] = not h["processes"] and all(
+                re.search(r"\.(bak|orig|old)|backup|attic", f, re.I) for f in h["files"])
+        return list(keys.values())
 
     hosts = list_hosts()
     with ThreadPoolExecutor(8) as ex:
         hits = [h for hs in ex.map(scan, hosts) for h in hs]
+    hits.sort(key=lambda h: (h["known_as"] is not None, h["backup_only"], h["provider"], h["ct"]))
     return {"hits": hits, "scanned": len(hosts)}
 
 
@@ -475,8 +634,9 @@ class Handler(BaseHTTPRequestHandler):
         b = self.body()
         try:
             if self.path == "/api/test":
-                self.send(200, dict(zip(("ok", "msg"), test_key(b.get("key", "").strip(),
-                                                                PROVIDERS[b.get("provider") or "anthropic"]))))
+                key = b.get("key", "").strip()
+                pid = b.get("provider") or detect(key) or "anthropic"
+                self.send(200, {**dict(zip(("ok", "msg"), test_key(key, pid))), "provider": PROVIDERS[pid]["name"]})
             elif self.path == "/api/rotate":
                 self.send(200, rotate(b.get("key", ""), b.get("apps", []), (b.get("key_name") or "").strip(),
                                       b.get("expires_at")))

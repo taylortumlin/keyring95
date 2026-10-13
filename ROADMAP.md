@@ -6,19 +6,23 @@ KeyRing 95 started as "rotate my Claude keys across my Proxmox containers". The 
 - **Runners**: where the app lives and how to reach it
 - **Sinks**: the places a key has to be pasted that aren't a file (today these are "update by hand")
 
-## 0.1: More providers
+## 0.1: More providers (mostly shipped in 0.1.0)
 
 Each provider is one entry in `PROVIDERS`: a key pattern, a fingerprint shape, and one cheap authenticated test call.
 
-- [ ] OpenAI (`sk-proj-…`, `GET /v1/models`)
-- [ ] Google Gemini (`AIza…`)
-- [ ] Mistral, Groq, xAI, OpenRouter, Together, DeepSeek
-- [ ] ElevenLabs, Deepgram, AssemblyAI
-- [ ] Resend, Postmark, SendGrid
+- [x] OpenAI (`sk-proj-…`, `GET /v1/models`) *(0.1.0)*
+- [x] Google Gemini (`AIza…`) *(0.1.0)*
+- [x] Mistral, Groq, xAI, OpenRouter *(0.1.0)*
+- [ ] Together, DeepSeek (their keys have no distinctive prefix)
+- [x] ElevenLabs, Hugging Face *(0.1.0)*
+- [ ] Deepgram, AssemblyAI
+- [x] Resend, SendGrid *(0.1.0)*
+- [ ] Postmark
 - [ ] Twilio (SID + token pair: needs two-variable support)
-- [ ] Stripe (restricted keys)
+- [x] Stripe, including restricted keys *(0.1.0)*
 - [ ] Cloudflare API tokens (they expose their own expiry via `/user/tokens/verify`)
-- [ ] GitHub fine-grained PATs (expiry readable from the API)
+- [x] GitHub tokens *(0.1.0)*
+- [ ] Read GitHub fine-grained PAT expiry from the API
 - [ ] Generic provider: any regex, test command optional
 
 ## 0.2: More places to run
@@ -28,6 +32,7 @@ Each provider is one entry in `PROVIDERS`: a key pattern, a fingerprint shape, a
 - [ ] **Docker runner:** containers on a Docker host without Proxmox
 - [ ] Docker image for KeyRing itself (for non-Proxmox setups)
 - [ ] Kubernetes Secrets
+- [x] Scan env files on disk, not just process environments *(0.1.0)*
 - [ ] Discovery that suggests config: "Scan" → **Add to config** button
 
 ## 0.3: Automate the "update by hand" list

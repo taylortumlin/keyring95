@@ -1,7 +1,13 @@
 {
   "rotate_days": 90,
   "warn_days": 14,
-  "allow": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"],
+  "allow": [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10"
+  ],
   "apps": [
     {
       "id": "chatbot",
@@ -29,10 +35,34 @@
       "reload": "cd /opt/crm && docker compose up -d --force-recreate",
       "check": "test \"$(docker inspect -f '{{.State.Running}}' crm)\" = true",
       "note": "docker compose bakes env in at create time, so recreate, don't restart."
+    },
+    {
+      "id": "voice-agent",
+      "provider": "openai",
+      "ct": 104,
+      "file": "/opt/voice/.env",
+      "var": "OPENAI_API_KEY",
+      "reload": "systemctl restart voice-agent",
+      "check": "systemctl is-active voice-agent"
+    },
+    {
+      "id": "mailer",
+      "provider": "resend",
+      "ct": 105,
+      "file": "/opt/mailer/.env",
+      "var": "RESEND_API_KEY",
+      "reload": "systemctl restart mailer",
+      "check": "systemctl is-active mailer"
     }
   ],
   "manual": [
-    {"id": "n8n", "where": "n8n → Credentials → Anthropic → paste → Save"},
-    {"id": "github-actions", "where": "GitHub → repo → Settings → Secrets and variables → Actions → ANTHROPIC_API_KEY"}
+    {
+      "id": "n8n",
+      "where": "n8n → Credentials → Anthropic → paste → Save"
+    },
+    {
+      "id": "github-actions",
+      "where": "GitHub → repo → Settings → Secrets and variables → Actions → ANTHROPIC_API_KEY"
+    }
   ]
 }
