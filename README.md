@@ -1,0 +1,103 @@
+# KeyRing 95
+
+**Find, rotate and age-track the API keys your self-hosted apps use, from one Windows 95 window.**
+
+![KeyRing 95 in demo mode](docs/screenshot.png)
+
+You run a homelab. A dozen containers each have an `ANTHROPIC_API_KEY` in some `.env` file. Half of them share a key, nobody remembers which key is called `test2`, and none have been rotated since you made them. KeyRing 95 fixes that:
+
+- **Finds them.** It reads each app's key and shows its fingerprint exactly as your provider's console does (`sk-ant-api03-7gS…jgAA`), so you can match them up. Keys shared between apps get flagged. **Scan for stray keys** checks every running container for keys you haven't registered.
+- **Rotates them.** Paste a new key and pick the apps. For each one it tests the key with the provider, rewrites the env file in place, restarts the app and checks it came back healthy. **If the app doesn't come back, it puts the old key back.** Then it tells you which old keys nothing uses any more, so you can delete them.
+- **Reminds you.** Each key is due at its expiry date or N days after rotation (default 90), whichever comes first. `GET /health` returns `503 KEYS DUE: …` two weeks ahead. Point Uptime Kuma (or any monitor) at it.
+- **Tracks the ones it can't reach.** Keys in n8n, GitHub Actions or a laptop are listed too, marked *update by hand*, with a **Mark done** button.
+
+It's one Python file using only the standard library, plus one HTML file. No database, no pip, no Docker.
+
+> **v0.0.1:** Proxmox VE containers + Anthropic keys. More providers and more places to run are next. See the [roadmap](ROADMAP.md).
+
+## Try it (10 seconds, no Proxmox needed)
+
+```sh
+git clone https://github.com/taylortumlin/keyring95 && cd keyring95
+python3 keyring95.py demo
+# open http://127.0.0.1:8099
+```
+
+Demo mode fakes four apps (two sharing a key), two hand-updated keys and a stray key for the scan. Any key starting with `sk-ant-api03-` works; put `bad` in it to see the rejection.
+
+## Install (Proxmox VE host)
+
+```sh
+git clone https://github.com/taylortumlin/keyring95 && cd keyring95
+./install.sh                 # asks for a login password
+nano /etc/keyring95/config.json
+systemctl restart keyring95
+```
+
+Open `http://<pve-host>:8099`. Any username works; the password is the one you chose. To upgrade, run `git pull && ./install.sh`. That never touches your config or state.
+
+### Why on the Proxmox host?
+
+KeyRing uses `pct exec` to read and write files inside containers, and that needs the host. The host already has root over every container, so KeyRing grants nothing new. It does mean KeyRing is a sensitive service: read [Security](#security).
+
+## Config
+
+`/etc/keyring95/config.json` (see [`config.example.json`](config.example.json)):
+
+| Field | |
+|---|---|
+| `rotate_days` | Rotate every N days (default 90) |
+| `warn_days` | `/health` goes red this many days early (default 14) |
+| `allow` | Client networks allowed to connect (default: private ranges + Tailscale) |
+| `apps[]` | Apps KeyRing can rotate itself |
+| `manual[]` | Keys you update by hand: `id` and `where` (instructions shown in the UI) |
+
+Each app:
+
+| Field | |
+|---|---|
+| `id` | Name shown in the UI |
+| `provider` | `anthropic` (default; more coming) |
+| `ct` | Proxmox container ID |
+| `file` | Env file holding the key |
+| `var` | Variable name, e.g. `ANTHROPIC_API_KEY` (matches `VAR=`, `export VAR=`, quoted or not) |
+| `reload` | Shell command that makes the app pick up the new key |
+| `check` | Shell command that exits 0 when the app is healthy (run 5s after reload) |
+| `note` | Optional reminder shown under the name |
+
+Recipes for `reload`/`check`:
+
+| App runs under | reload | check |
+|---|---|---|
+| systemd | `systemctl restart myapp` | `systemctl is-active myapp` |
+| pm2 | `pm2 restart myapp --update-env` | `pm2 jlist \| grep -q '"status":"online"'` |
+| docker compose | `cd /opt/myapp && docker compose up -d --force-recreate` | `test "$(docker inspect -f '{{.State.Running}}' myapp)" = true` |
+
+Compose reads `env_file` when it creates the container, so a plain `docker restart` keeps the old key. Recreate it.
+
+## How a rotation works
+
+1. Checks the pasted key's format and makes one cheap, authenticated call to the provider (Anthropic: `GET /v1/models`).
+2. For each selected app: reads the env file and swaps only the key on the `VAR=` line. The write uses `cat >`, which keeps the file's owner, group and mode, and strips world-read access if it was set.
+3. Runs `reload`, waits, runs `check`. If either fails, it restores the original file, reloads again and reports the failure.
+4. Records the date, key name and expiry. Lists old keys no app uses any more.
+
+## Security
+
+- **Keys are never stored.** State holds fingerprints (first characters + last 4 + an 8-character hash) and dates only. A key passes through memory during a rotation and reaches the container through `stdin`, never a command line (`ps` can't see it). Request bodies are never logged.
+- **Login** is HTTP Basic auth with a PBKDF2 password hash, and failed attempts are slowed down. Basic auth over plain HTTP is only as safe as your network, so **keep KeyRing on your LAN or VPN (e.g. Tailscale)** or put it behind a TLS reverse proxy. Clients outside `allow` get a 403.
+- **`/health` needs no login** so monitors can read it. It reveals app names and nothing else.
+- **Backups:** KeyRing doesn't leave `.env.bak` files. Old copies you made yourself still hold old keys. Delete those old keys at the provider and the copies are harmless.
+- Found a vulnerability? See [SECURITY.md](SECURITY.md).
+
+## Status
+
+v0.0.1 has been used to rotate the Anthropic keys of 8 apps across 7 containers on one homelab, covering systemd, pm2 and docker compose apps. It's small and young. Read the code (it's ~450 lines) before trusting it with production.
+
+## Contributing
+
+PRs welcome, especially new providers. Adding one is a regex and a test call. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)

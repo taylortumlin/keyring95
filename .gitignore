@@ -1,0 +1,7 @@
+# your real setup stays out of git
+config.json
+*.local.sh
+state.json
+passwd
+__pycache__/
+.DS_Store

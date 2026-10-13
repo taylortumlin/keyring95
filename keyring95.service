@@ -1,0 +1,13 @@
+[Unit]
+Description=KeyRing 95 - API key rotator
+After=network-online.target pve-cluster.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/keyring95/keyring95.py
+Environment=KEYRING_CONFIG=/etc/keyring95/config.json
+Environment=KEYRING_STATE=/var/lib/keyring95
+Restart=on-failure
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

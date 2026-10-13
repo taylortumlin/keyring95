@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KeyRing 95</title>
+<style>
+/* Win95 look: plain CSS bevels, no images or web fonts. */
+:root{--face:#c0c0c0;--hi:#fff;--lo:#808080;--dk:#000;--navy:#000080;--teal:#008080}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;min-height:100vh;background:var(--teal);font:12px/1.35 Tahoma,"MS Sans Serif","Segoe UI",sans-serif;color:#000;padding:24px 12px 40px}
+.out{box-shadow:inset -1px -1px var(--dk),inset 1px 1px var(--hi),inset -2px -2px var(--lo),inset 2px 2px #dfdfdf;background:var(--face)}
+.in{box-shadow:inset -1px -1px var(--hi),inset 1px 1px var(--lo),inset -2px -2px #dfdfdf,inset 2px 2px var(--dk);background:#fff}
+.win{max-width:1180px;margin:0 auto;padding:3px}
+.title{background:linear-gradient(90deg,var(--navy),#1084d0);color:#fff;font-weight:bold;padding:3px 4px 3px 6px;display:flex;align-items:center;gap:6px}
+.title .ctl{margin-left:auto;display:flex;gap:2px}
+.title .ctl span{width:16px;height:14px;font:bold 10px/12px monospace;color:#000;text-align:center}
+.menu{display:flex;gap:2px;padding:2px 2px 3px;flex-wrap:wrap}
+.menu button{background:none;border:0;padding:2px 8px;font:inherit;cursor:pointer}
+.menu button:hover{background:var(--navy);color:#fff}
+.menu u{text-decoration:underline}
+.body{padding:8px}
+button.b{font:inherit;padding:4px 14px;min-width:76px;border:0;cursor:pointer}
+button.b.sm{padding:2px 8px;min-width:0}
+button.b:active:not(:disabled){box-shadow:inset 1px 1px var(--dk),inset -1px -1px var(--hi),inset 2px 2px var(--lo)}
+button.b:disabled{color:var(--lo);text-shadow:1px 1px #fff;cursor:default}
+button.b.def{outline:1px solid #000;outline-offset:-1px}
+fieldset{border:0;margin:10px 0 0;padding:14px 10px 10px;position:relative;box-shadow:inset -1px -1px var(--hi),inset 1px 1px var(--lo),inset -2px -2px var(--lo),inset 2px 2px var(--hi)}
+legend{position:absolute;top:-8px;left:8px;background:var(--face);padding:0 4px}
+.lv{overflow:auto;max-height:440px;padding:2px}
+table{border-collapse:collapse;width:100%;background:#fff}
+th{position:sticky;top:0;text-align:left;font-weight:normal;padding:3px 6px;white-space:nowrap}
+td{padding:3px 6px;white-space:nowrap;border-bottom:1px dotted #ddd;vertical-align:top}
+tr.sel td{background:var(--navy);color:#fff}
+tr.sel td .fp{color:#fff}
+tr.manual td{background:#f4f4ea}
+.fp{font-family:"Lucida Console",Monaco,monospace;font-size:11px;color:var(--navy);cursor:pointer;text-decoration:underline dotted}
+.led{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;box-shadow:inset -1px -1px rgba(0,0,0,.4),inset 1px 1px rgba(255,255,255,.6)}
+.ok{background:#0c0}.due-soon{background:#fc0}.overdue,.error{background:#e00}
+.warn{color:#a00}
+.small{font-size:11px;color:#444}
+.wrap{white-space:normal;max-width:300px}
+tr.sel .small,tr.sel .warn{color:#ffd}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+label{white-space:nowrap}
+input[type=text],input[type=password],input[type=date]{font:inherit;border:0;padding:4px 5px;min-width:0}
+#key{flex:1 1 300px;font-family:"Lucida Console",Monaco,monospace}
+.progress{height:20px;padding:3px;display:flex;gap:2px;overflow:hidden;flex:1 1 200px}
+.progress i{width:9px;flex:none;background:var(--navy)}
+.status{display:flex;gap:2px;margin-top:6px}
+.status div{padding:2px 6px;flex:1;background:var(--face)}
+.status div:first-child{flex:3}
+.log{height:110px;overflow:auto;padding:4px;font-family:"Lucida Console",Monaco,monospace;font-size:11px}
+#modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.15)}
+#modal .win{width:min(560px,94vw)}
+#modal ul{margin:6px 0;padding-left:18px}
+.form{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center}
+.icon{font-size:28px;line-height:1}
+.hint{background:#ffffe1;border:1px solid #000;padding:6px 8px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="win out">
+  <div class="title"><span>🔑</span> KeyRing 95 — API Key Manager<span id="demo" class="small" style="color:#ff0" hidden>[DEMO MODE: nothing is real]</span>
+    <div class="ctl"><span class="out">_</span><span class="out">□</span><span class="out">×</span></div></div>
+  <div class="menu">
+    <button id="m-refresh"><u>F</u>ile ▸ Refresh</button>
+    <button id="m-scan"><u>T</u>ools ▸ Scan for stray keys…</button>
+    <button id="m-about"><u>H</u>elp ▸ About</button>
+  </div>
+  <div class="body">
+    <fieldset><legend>Keys</legend>
+      <div class="lv in"><table>
+        <thead><tr class="out"><th class="out"><input type="checkbox" id="all" aria-label="Select all"></th><th class="out">App</th><th class="out">CT</th><th class="out">Provider</th><th class="out">Key in use</th><th class="out">Key name</th><th class="out">Rotated</th><th class="out">Expires</th><th class="out">Status</th><th class="out"></th></tr></thead>
+        <tbody id="rows"><tr><td colspan="10">Reading containers…</td></tr></tbody>
+      </table></div>
+      <div class="small" style="margin-top:4px">Click a key fingerprint to select every app on that key. ✋ rows can't be reached from here: update them by hand, then click <b>Mark done</b>.</div>
+    </fieldset>
+
+    <fieldset><legend>Rotate</legend>
+      <div class="row">
+        <label for="cname">Key name:</label>
+        <input type="text" id="cname" class="in" placeholder="e.g. stockpile" style="flex:0 1 200px">
+        <label for="exp">Expires:</label>
+        <input type="date" id="exp" class="in">
+        <button class="b out sm" data-plus="30">+30d</button>
+        <button class="b out sm" data-plus="90">+90d</button>
+        <button class="b out sm" data-plus="0">Never</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label for="key">New key:</label>
+        <input type="password" id="key" class="in" placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false">
+        <label><input type="checkbox" id="show"> Show</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="b out" id="test">Test Key</button>
+        <button class="b out def" id="go" disabled>Rotate Selected (0)</button>
+        <div class="progress in" id="prog" hidden></div>
+      </div>
+      <div class="hint">Tip: one key per app, named after the app in your provider's console. Set the same expiry here that you picked there, so KeyRing warns you before it dies.</div>
+    </fieldset>
+
+    <fieldset><legend>Event log</legend>
+      <div class="log in" id="log"></div>
+    </fieldset>
+
+    <div class="status"><div class="in" id="sb1">Ready</div><div class="in" id="sb2"></div></div>
+  </div>
+</div>
+
+<div id="modal"><div class="win out">
+  <div class="title" id="mtitle">KeyRing 95</div>
+  <div class="body"><div class="row" style="align-items:flex-start;flex-wrap:nowrap"><div class="icon" id="micon">ℹ️</div><div id="mbody" style="flex:1"></div></div>
+    <div class="row" style="justify-content:center;margin-top:12px"><button class="b out def" id="mok">OK</button><button class="b out" id="mcancel" hidden>Cancel</button></div></div>
+</div></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const today = () => new Date().toLocaleDateString('en-CA');
+const plusDays = n => { const d = new Date(); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
+let state = {apps: []}, selected = new Set(), busy = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  return r.json();
+}
+function closeDialog() { $('#modal').style.display = 'none'; }
+// onOk given = OK/Cancel dialog; otherwise a plain message box.
+function dialog(title, html, icon = 'ℹ️', onOk) {
+  $('#mtitle').textContent = title; $('#mbody').innerHTML = html; $('#micon').textContent = icon;
+  $('#mcancel').hidden = !onOk;
+  $('#mok').onclick = async () => { if (onOk && (await onOk()) === false) return; closeDialog(); };
+  $('#modal').style.display = 'flex'; $('#mok').focus();
+}
+$('#mcancel').onclick = closeDialog;
+
+function statusCell(a) {
+  if (a.status === 'error') return `<span class="led error"></span>Error: ${esc(a.error)}`;
+  if (!a.due_date) return '<span class="led overdue"></span>Overdue: no history';
+  const what = a.due_reason === 'expires' ? 'Expires' : 'Rotate';
+  const l = a.days_left;
+  const txt = l < 0 ? `${a.due_reason === 'expires' ? 'EXPIRED' : 'Overdue'} ${-l}d ago` : l === 0 ? `${what} today` : `${what} in ${l}d`;
+  return `<span class="led ${a.status}"></span>${txt}`;
+}
+const date = d => d ? esc(d.slice(0, 10)) : '—';
+
+function render() {
+  $('#rows').innerHTML = state.apps.map(a => {
+    const auto = a.kind === 'auto', sel = selected.has(a.id);
+    const keyCell = auto
+      ? (a.fp ? `<span class="fp" data-h="${a.fp.hash}" title="Select all apps on this key">${esc(a.fp.display)}</span>` : '—')
+        + (a.shared_with.length ? `<div class="warn small">⚠ shared with ${esc(a.shared_with.join(', '))}</div>` : '')
+      : `✋ Update by hand<div class="small wrap">${esc(a.where)}</div>`;
+    return `<tr data-id="${esc(a.id)}" class="${sel ? 'sel' : ''} ${auto ? '' : 'manual'}">
+      <td>${auto ? `<input type="checkbox" ${sel ? 'checked' : ''} ${a.fp ? '' : 'disabled'} aria-label="Select ${esc(a.id)}">` : ''}</td>
+      <td><b>${esc(a.id)}</b>${a.note ? `<div class="small wrap">${esc(a.note)}</div>` : ''}</td>
+      <td>${a.ct ?? ''}</td>
+      <td>${esc(a.provider)}</td>
+      <td>${keyCell}</td>
+      <td>${esc(a.key_name || '?')}</td>
+      <td>${date(a.rotated_at)}</td>
+      <td>${a.expires_at ? date(a.expires_at) : 'Never'}</td>
+      <td>${statusCell(a)}</td>
+      <td>${auto ? '' : `<button class="b out sm" data-done="${esc(a.id)}">Mark done…</button> `}<button class="b out sm" data-edit="${esc(a.id)}">Edit…</button></td>
+    </tr>`;
+  }).join('');
+  $('#log').innerHTML = state.log.map(l => `<div>${esc(l.t.replace('T', ' '))}  ${esc(l.msg)}</div>`).join('') || '<div>No events yet.</div>';
+  const due = state.apps.filter(a => a.status !== 'ok');
+  const next = state.apps.filter(a => a.due_date).sort((x, y) => x.due_date.localeCompare(y.due_date))[0];
+  $('#sb1').textContent = due.length ? `${due.length} need attention: ${due.map(a => a.id).join(', ')}`
+    : `All keys are fresh.${next ? ` Next up: ${next.id} on ${next.due_date}.` : ''}`;
+  $('#sb2').textContent = `${state.apps.length} keys · rotate every ${state.rotate_days}d · warn ${state.warn_days}d ahead`;
+  syncControls();
+}
+
+function syncControls() {
+  $('#go').textContent = `Rotate Selected (${selected.size})`;
+  $('#go').disabled = busy || !selected.size || !$('#key').value.trim();
+  $('#test').disabled = busy || !$('#key').value.trim();
+  const autos = state.apps.filter(a => a.kind === 'auto' && a.fp);
+  $('#all').checked = autos.length && autos.every(a => selected.has(a.id));
+  $('#cname').placeholder = selected.size === 1 ? [...selected][0] : 'e.g. stockpile';
+}
+
+$('#rows').addEventListener('click', e => {
+  const t = e.target;
+  if (t.dataset.edit) return editDialog(t.dataset.edit, false);
+  if (t.dataset.done) return editDialog(t.dataset.done, true);
+  const fp = t.closest('.fp');
+  if (fp) {
+    selected = new Set(state.apps.filter(a => a.fp && a.fp.hash === fp.dataset.h).map(a => a.id));
+    return render();
+  }
+  const tr = t.closest('tr[data-id]'), box = tr && tr.querySelector('input[type=checkbox]');
+  if (!box || box.disabled) return;
+  selected.has(tr.dataset.id) ? selected.delete(tr.dataset.id) : selected.add(tr.dataset.id);
+  render();
+});
+$('#all').onchange = e => {
+  selected = new Set(e.target.checked ? state.apps.filter(a => a.kind === 'auto' && a.fp).map(a => a.id) : []);
+  render();
+};
+$('#key').oninput = syncControls;
+$('#show').onchange = e => $('#key').type = e.target.checked ? 'text' : 'password';
+document.querySelectorAll('[data-plus]').forEach(b => b.onclick = () => {
+  $('#exp').value = +b.dataset.plus ? plusDays(+b.dataset.plus) : '';
+});
+
+// "Mark done" = I just rotated it by hand (dates default to today). "Edit" = fix the record.
+function editDialog(id, done) {
+  const a = state.apps.find(x => x.id === id);
+  dialog(done ? `Mark ${id} rotated` : `Edit ${id}`, `<div class="form">
+      <label for="e-rot">Rotated on:</label><input type="date" id="e-rot" class="in" value="${done ? today() : (a.rotated_at || '').slice(0, 10)}">
+      <label for="e-exp">Expires:</label><span class="row"><input type="date" id="e-exp" class="in" value="${done ? '' : (a.expires_at || '')}"><span class="small">blank = never</span></span>
+      <label for="e-name">Key name:</label><input type="text" id="e-name" class="in" value="${esc(a.key_name || '')}" placeholder="${esc(id)}">
+    </div>${a.where ? `<p class="small">${esc(a.where)}</p>` : ''}`, done ? '✋' : '📝', async () => {
+    const r = await api('/api/edit', {id, rotated_at: $('#e-rot').value, expires_at: $('#e-exp').value, key_name: $('#e-name').value});
+    if (!r.ok) { $('#sb1').textContent = r.error; return false; }
+    refresh();
+  });
+}
+
+let timer;
+function progress(on) {
+  const p = $('#prog'); clearInterval(timer); p.hidden = !on; p.innerHTML = '';
+  if (on) { let n = 0; timer = setInterval(() => { p.innerHTML = '<i></i>'.repeat(n = (n % 40) + 1); }, 180); }
+}
+async function withBusy(msg, fn) {
+  busy = true; syncControls(); progress(true); $('#sb1').textContent = msg;
+  try { return await fn(); } finally { busy = false; progress(false); syncControls(); }
+}
+
+$('#test').onclick = () => withBusy('Testing key with Anthropic…', async () => {
+  const first = state.apps.find(a => selected.has(a.id));
+  const r = await api('/api/test', {key: $('#key').value, provider: first ? first.provider_id : 'anthropic'});
+  dialog('Test Key', esc(r.msg), r.ok ? '✅' : '⛔');
+  $('#sb1').textContent = r.msg;
+});
+
+$('#go').onclick = () => withBusy('Rotating… restarting apps, this takes a few seconds each.', async () => {
+  const ids = [...selected];
+  const cname = $('#cname').value.trim() || (ids.length === 1 ? ids[0] : '');
+  const r = await api('/api/rotate', {key: $('#key').value, apps: ids, key_name: cname, expires_at: $('#exp').value || null});
+  if (r.error) return dialog('Rotate failed', esc(r.error), '⛔');
+  $('#key').value = ''; $('#cname').value = ''; $('#exp').value = ''; selected.clear();
+  let html = '<ul>' + r.results.map(x => `<li>${x.ok ? '✅' : '❌'} <b>${esc(x.id)}</b>: ${esc(x.msg)}</li>`).join('') + '</ul>';
+  if (r.revoke.length) html += `<p><b>Now delete these old keys at the provider</b> (nothing uses them any more):</p><ul>${r.revoke.map(d => `<li><code>${esc(d)}</code></li>`).join('')}</ul>`;
+  dialog(r.ok ? 'Rotation complete' : 'Rotation finished with errors', html, r.ok ? '✅' : '⚠️');
+  await refresh();
+});
+
+$('#m-scan').onclick = () => withBusy('Scanning every running container…', async () => {
+  const r = await api('/api/discover', {});
+  const stray = r.hits.filter(h => !h.known_as);
+  let html = `Scanned ${r.scanned} containers' running processes.<ul>` +
+    r.hits.map(h => `<li>CT ${h.ct} <code>${esc(h.process)}</code> ${esc(h.provider)} ${esc(h.fp.display)}: ${h.known_as ? 'tracked (' + esc(h.known_as) + ')' : '<b class="warn">NOT TRACKED</b>'}</li>`).join('') + '</ul>';
+  if (stray.length) html += 'Add untracked ones to your <code>config.json</code>.';
+  dialog('Scan results', html, stray.length ? '⚠️' : '✅');
+  $('#sb1').textContent = 'Scan complete';
+});
+$('#m-refresh').onclick = () => refresh();
+$('#m-about').onclick = () => dialog('About KeyRing 95', `<b>KeyRing 95 v${esc(state.version)}</b><br>Finds, rotates and age-tracks the API keys your self-hosted apps use.<br><br>
+  Keys are never stored, only fingerprints and dates. Each rotation tests the key first, rewrites the env file, restarts the app and checks it's healthy, and rolls back if it isn't.<br><br>
+  A key is due at its expiry or ${state.rotate_days ?? 90} days after rotation, whichever comes first. Point your uptime monitor at <code>/health</code>; it goes red ${state.warn_days ?? 14} days ahead.`);
+
+async function refresh() {
+  $('#sb1').textContent = 'Reading containers…';
+  state = await api('/api/state');
+  $('#demo').hidden = !state.demo;
+  selected = new Set([...selected].filter(id => state.apps.some(a => a.id === id && a.fp)));
+  render();
+}
+refresh();
+</script>
+</body>
+</html>
