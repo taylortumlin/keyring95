@@ -8,12 +8,15 @@ You run a homelab. A dozen containers each have an `ANTHROPIC_API_KEY`, an `OPEN
 
 - **Finds them.** It reads each app's key and shows its fingerprint exactly as your provider's console does (`sk-ant-api03-7gS…jgAA`), so you can match them up. Keys shared between apps get flagged. **Scan for stray keys** checks every running container, both process environments and env files on disk, for keys of [13 providers](#supported-keys) you haven't registered, and points out old keys still sitting in `.env.bak` copies.
 - **Rotates them.** Paste a new key and pick the apps. For each one it tests the key with the provider, rewrites the env file in place, restarts the app and checks it came back healthy. **If the app doesn't come back, it puts the old key back.** Then it tells you which old keys nothing uses any more, so you can delete them.
-- **Reminds you.** Each key is due at its expiry date or N days after rotation (default 90), whichever comes first. `GET /health` returns `503 KEYS DUE: …` two weeks ahead. Point Uptime Kuma (or any monitor) at it.
+- **Reminds you.** Each key is due at its expiry date or N days after rotation (default 90), whichever comes first. `GET /health` returns `503 KEYS DUE: …` two weeks ahead, and `503 DEAD: …` when a provider stops accepting a key. Point Uptime Kuma (or any monitor) at it.
+- **Adds them for you.** Every untracked key in the scan has a **Track…** button. KeyRing reads the file, finds the variable, and works out how the app restarts (systemd, systemd drop-ins, docker compose or pm2). Check the guess, press OK, done. **Tools ▸ Add app…** does the same for anything else. No hand-editing `config.json`.
+- **Catches dead keys.** Once a day (and on **Tools ▸ Check every key now**) it asks each provider whether each key still works. A revoked or expired key shows as **Dead key** and turns `/health` red, before your users notice.
+- **Cleans up leaks.** **Tools ▸ I leaked a key…**: paste it, and KeyRing tells you whether it still works, finds every app, file and process using it, selects the tracked apps for rotation and walks you through the rest.
 - **Tracks the ones it can't reach.** Keys in n8n, GitHub Actions or a laptop are listed too, marked *update by hand*, with a **Mark done** button.
 
 It's one Python file using only the standard library, plus one HTML file. No database, no pip, no Docker.
 
-> **v0.1.0:** Proxmox VE containers, 13 providers. More places to run are next. See the [roadmap](ROADMAP.md).
+> **v0.2.0:** Proxmox VE containers, 13 providers, track from the UI, daily live checks, leak response. More places to run are next. See the [roadmap](ROADMAP.md).
 
 ## Try it (10 seconds, no Proxmox needed)
 
@@ -50,7 +53,11 @@ KeyRing uses `pct exec` to read and write files inside containers, and that need
 | `warn_days` | `/health` goes red this many days early (default 14) |
 | `allow` | Client networks allowed to connect (default: private ranges + Tailscale) |
 | `apps[]` | Apps KeyRing can rotate itself |
-| `manual[]` | Keys you update by hand: `id` and `where` (instructions shown in the UI) |
+| `manual[]` | Keys you update by hand: `id`, `provider` and `where` (instructions shown in the UI) |
+| `check_hours` | Ask each provider whether each key still works every N hours (default 24, `0` = off) |
+| `ui_can_edit` | Let **Track** / **Add app** / **Stop tracking** write this file (default `true`). The previous version is kept as `config.json.prev` |
+
+You rarely need to edit it by hand: **Track…** and **Add app…** write it for you.
 
 Each app:
 
@@ -60,9 +67,9 @@ Each app:
 | `provider` | One of the [supported keys](#supported-keys) below (default `anthropic`) |
 | `ct` | Proxmox container ID |
 | `file` | Env file holding the key |
-| `var` | Variable name, e.g. `ANTHROPIC_API_KEY` (matches `VAR=`, `export VAR=`, quoted or not) |
-| `reload` | Shell command that makes the app pick up the new key |
-| `check` | Shell command that exits 0 when the app is healthy (run 5s after reload) |
+| `var` | Variable name, e.g. `ANTHROPIC_API_KEY`. Matches `VAR=`, `export VAR=`, systemd `Environment="VAR=…"`, compose `- VAR=…` and `VAR: …`, quoted or not |
+| `reload` | Shell command that makes the app pick up the new key. Optional: leave it out when nothing needs restarting |
+| `check` | Shell command that exits 0 when the app is healthy (run 5s after reload). Optional |
 | `note` | Optional reminder shown under the name |
 
 Recipes for `reload`/`check`:
@@ -110,13 +117,15 @@ Every running container's process environments (`/proc/*/environ`), plus env-ish
 
 - **Keys are never stored.** State holds fingerprints (first characters + last 4 + an 8-character hash) and dates only. A key passes through memory during a rotation and reaches the container through `stdin`, never a command line (`ps` can't see it). Request bodies are never logged.
 - **Login** is HTTP Basic auth with a PBKDF2 password hash, and failed attempts are slowed down. Basic auth over plain HTTP is only as safe as your network, so **keep KeyRing on your LAN or VPN (e.g. Tailscale)** or put it behind a TLS reverse proxy. Clients outside `allow` get a 403.
+- **The login is root-equivalent.** Anyone with it can rotate keys and, with `ui_can_edit` on, add reload commands that run as root inside your containers. Treat it like the Proxmox root password, or set `"ui_can_edit": false` and edit the config by hand.
+- **Live checks** send each key to its own provider once a day, the same read-only call as **Test Key**. A network failure is recorded as unknown, never as dead.
 - **`/health` needs no login** so monitors can read it. It reveals app names and nothing else.
 - **Backups:** KeyRing doesn't leave `.env.bak` files. Old copies you made yourself still hold old keys. Delete those old keys at the provider and the copies are harmless.
 - Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## Status
 
-v0.0.1 rotated the Anthropic keys of 8 apps across 7 containers on one homelab, covering systemd, pm2 and docker compose apps. v0.1.0's scan covers 38 containers in about 10 seconds. It's small and young. Read the code (it's ~700 lines) before trusting it with production.
+v0.0.1 rotated the Anthropic keys of 8 apps across 7 containers on one homelab, covering systemd, pm2 and docker compose apps. v0.1.0's scan covers 38 containers in about 10 seconds. It's small and young. Read the code (it's ~950 lines) before trusting it with production.
 
 ## Contributing
 

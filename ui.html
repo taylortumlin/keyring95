@@ -64,7 +64,9 @@ input[type=text],input[type=password],input[type=date]{font:inherit;border:0;pad
 .status div:first-child{flex:3}
 .log{height:110px;overflow:auto;padding:4px;font-family:"Lucida Console",Monaco,monospace;font-size:11px}
 #modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.15)}
-#modal .win{width:min(560px,94vw)}
+#modal .win{width:min(660px,94vw)}
+select.in{font:inherit;padding:2px}
+.form .row{margin:0}
 #modal ul{margin:6px 0;padding-left:18px}
 .form{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center}
 .icon{font-size:28px;line-height:1}
@@ -83,6 +85,10 @@ input[type=text],input[type=password],input[type=date]{font:inherit;border:0;pad
     <div class="mi"><button class="mt" aria-haspopup="true" aria-expanded="false"><u>T</u>ools</button>
       <div class="dd out" role="menu">
         <button role="menuitem" id="m-scan"><span><u>S</u>can for stray keys…</span></button>
+        <button role="menuitem" id="m-verify"><span><u>C</u>heck every key now</span></button>
+        <button role="menuitem" id="m-leak"><span>I <u>l</u>eaked a key…</span></button>
+        <hr>
+        <button role="menuitem" id="m-add"><span><u>A</u>dd app…</span></button>
       </div></div>
     <div class="mi"><button class="mt" aria-haspopup="true" aria-expanded="false"><u>H</u>elp</button>
       <div class="dd out" role="menu">
@@ -150,16 +156,17 @@ async function api(path, body) {
 }
 function closeDialog() { $('#modal').style.display = 'none'; }
 // onOk given = OK/Cancel dialog; otherwise a plain message box.
-function dialog(title, html, icon = 'ℹ️', onOk) {
+function dialog(title, html, icon = 'ℹ️', onOk, onCancel) {
   $('#mtitle').textContent = title; $('#mbody').innerHTML = html; $('#micon').textContent = icon;
   $('#mcancel').hidden = !onOk;
+  $('#mcancel').onclick = () => { closeDialog(); onCancel && onCancel(); };
   $('#mok').onclick = async () => { if (onOk && (await onOk()) === false) return; closeDialog(); };
   $('#modal').style.display = 'flex'; $('#mok').focus();
 }
-$('#mcancel').onclick = closeDialog;
 
 function statusCell(a) {
   if (a.status === 'error') return `<span class="led error"></span>Error: ${esc(a.error)}`;
+  if (a.status === 'dead') return `<span class="led error"></span><b>Dead key:</b> ${esc(a.error)}<div class="small">checked ${esc(a.checked.t.replace('T', ' ').slice(0, 16))}</div>`;
   if (!a.due_date) return '<span class="led overdue"></span>Overdue: no history';
   const what = a.due_reason === 'expires' ? 'Expires' : 'Rotate';
   const l = a.days_left;
@@ -193,7 +200,8 @@ function render() {
   const next = state.apps.filter(a => a.due_date).sort((x, y) => x.due_date.localeCompare(y.due_date))[0];
   $('#sb1').textContent = due.length ? `${due.length} need attention: ${due.map(a => a.id).join(', ')}`
     : `All keys are fresh.${next ? ` Next up: ${next.id} on ${next.due_date}.` : ''}`;
-  $('#sb2').textContent = `${state.apps.length} keys · rotate every ${state.rotate_days}d · warn ${state.warn_days}d ahead`;
+  $('#sb2').textContent = `${state.apps.length} keys · rotate every ${state.rotate_days}d · warn ${state.warn_days}d ahead`
+    + (state.last_check ? ` · checked ${state.last_check.slice(5, 16).replace('T', ' ')}` : '');
   syncControls();
 }
 
@@ -244,11 +252,18 @@ function editDialog(id, done) {
       <label for="e-rot">Rotated on:</label><input type="date" id="e-rot" class="in" value="${done ? today() : (a.rotated_at || '').slice(0, 10)}">
       <label for="e-exp">Expires:</label><span class="row"><input type="date" id="e-exp" class="in" value="${done ? '' : (a.expires_at || '')}"><span class="small">blank = never</span></span>
       <label for="e-name">Key name:</label><input type="text" id="e-name" class="in" value="${esc(a.key_name || '')}" placeholder="${esc(id)}">
-    </div>${a.where ? `<p class="small">${esc(a.where)}</p>` : ''}`, done ? '✋' : '📝', async () => {
+    </div>${a.where ? `<p class="small">${esc(a.where)}</p>` : ''}
+    ${state.can_edit && !done ? '<p><button class="b out sm" id="e-untrack">Stop tracking…</button></p>' : ''}`, done ? '✋' : '📝', async () => {
     const r = await api('/api/edit', {id, rotated_at: $('#e-rot').value, expires_at: $('#e-exp').value, key_name: $('#e-name').value});
     if (!r.ok) { $('#sb1').textContent = r.error; return false; }
     refresh();
   });
+  const u = $('#e-untrack');
+  if (u) u.onclick = () => dialog(`Stop tracking ${id}?`, `KeyRing forgets <b>${esc(id)}</b> and its dates. The app and its key are not touched, and you can track it again later.`, '❓', async () => {
+    const r = await api('/api/untrack', {id});
+    if (!r.ok) { $('#sb1').textContent = r.error; return false; }
+    selected.delete(id); refresh();
+  }, () => editDialog(id, false));
 }
 
 let timer;
@@ -279,22 +294,140 @@ $('#go').onclick = () => withBusy('Rotating… restarting apps, this takes a few
   await refresh();
 });
 
+// ---- Scan, Track, Add app ----
+const isBackup = f => /\.(bak|orig|old)|backup|attic/i.test(f);
+const whereList = h => [...h.processes.map(p => `<code>${esc(p)}</code> process`), ...h.files.map(f => `<code>${esc(f)}</code>`)].join(', ');
+
 $('#m-scan').onclick = () => withBusy('Scanning every running container: processes and env files…', async () => {
-  const r = await api('/api/discover', {});
+  showScan(await api('/api/discover', {}));
+});
+
+function showScan(r) {
   const stray = r.hits.filter(h => !h.known_as && !h.backup_only), old = r.hits.filter(h => !h.known_as && h.backup_only);
-  const provs = new Set(r.hits.map(h => h.provider));
-  const where = h => [...h.processes.map(p => `<code>${esc(p)}</code> process`), ...h.files.map(f => `<code>${esc(f)}</code>`)].join(', ');
-  const item = h => `<li>CT ${h.ct} · ${esc(h.provider)} <span class="fp">${esc(h.fp.display)}</span>
-    ${h.known_as ? '· tracked as <b>' + esc(h.known_as) + '</b>' : h.backup_only ? '· <i>only in backups</i>' : '· <b class="warn">NOT TRACKED</b>'}
-    <div class="small wrap">${where(h)}</div></li>`;
-  let html = `Scanned ${r.scanned} containers: running processes and env files.<br>Found <b>${r.hits.length}</b> keys from <b>${provs.size}</b> providers.`;
-  if (stray.length) html += `<p><b class="warn">Not tracked (${stray.length})</b>: add them to <code>config.json</code> so they get rotated and reminded.</p><ul>${stray.map(item).join('')}</ul>`;
-  if (old.length) html += `<p><b>Only in backup copies (${old.length})</b>: probably old keys. Delete them at the provider, or delete the files.</p><ul>${old.map(item).join('')}</ul>`;
   const known = r.hits.filter(h => h.known_as);
+  const provs = new Set(r.hits.map(h => h.provider));
+  const item = h => `<li>CT ${h.ct} · ${esc(h.provider)} <span class="fp">${esc(h.fp.display)}</span>
+    ${h.known_as ? '· tracked as <b>' + esc(h.known_as) + '</b>' : h.backup_only ? '· <i>only in backups</i>'
+      : `· <b class="warn">NOT TRACKED</b> ${state.can_edit ? `<button class="b out sm" data-track="${r.hits.indexOf(h)}">Track…</button>` : ''}`}
+    <div class="small wrap">${whereList(h)}</div></li>`;
+  let html = `Scanned ${r.scanned} containers: running processes and env files.<br>Found <b>${r.hits.length}</b> keys from <b>${provs.size}</b> providers.`;
+  if (stray.length) html += `<p><b class="warn">Not tracked (${stray.length})</b>: click <b>Track…</b> so KeyRing can rotate them and remind you.</p><ul>${stray.map(item).join('')}</ul>`;
+  if (old.length) html += `<p><b>Only in backup copies (${old.length})</b>: probably old keys. Delete them at the provider, or delete the files.</p><ul>${old.map(item).join('')}</ul>`;
   if (known.length) html += `<p><b>Tracked (${known.length})</b></p><ul>${known.map(item).join('')}</ul>`;
   dialog('Scan results', `<div style="max-height:60vh;overflow:auto">${html}</div>`, stray.length ? '⚠️' : '✅');
+  $('#mbody').querySelectorAll('[data-track]').forEach(b => b.onclick = () => trackHit(r.hits[+b.dataset.track], () => showScan(r)));
   $('#sb1').textContent = `Scan complete: ${stray.length} untracked, ${old.length} in backups only`;
+}
+
+// A scan hit -> Track dialog. Found in a file: KeyRing can rotate it. Only in a process: by hand.
+function trackHit(h, back) {
+  const file = h.files.find(f => !isBackup(f));
+  const done = id => { h.known_as = id; back && back(); };
+  if (file) return trackDialog({ct: h.ct, file, hash: h.fp.hash, provider_id: h.provider_id,
+    title: `Track ${h.provider} key ${h.fp.display}`}, done, back);
+  trackDialog({kind: 'manual', provider_id: h.provider_id, title: `Track ${h.provider} key ${h.fp.display}`,
+    where: `CT ${h.ct}: in the environment of ${h.processes.join(', ')}. Find where it's set and update it there.`}, done, back);
+}
+
+function trackDialog(pre = {}, after, back) {
+  const opts = Object.entries(state.providers).map(([id, p]) =>
+    `<option value="${id}" ${id === (pre.provider_id || 'anthropic') ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  dialog(pre.title || 'Add app', `
+    <div class="row" style="margin-bottom:8px">
+      <label><input type="radio" name="t-kind" value="auto" ${pre.kind !== 'manual' ? 'checked' : ''}> KeyRing updates it (env file in a container)</label>
+      <label><input type="radio" name="t-kind" value="manual" ${pre.kind === 'manual' ? 'checked' : ''}> I update it by hand</label>
+    </div>
+    <div class="form">
+      <label for="t-id">Name:</label><input id="t-id" class="in" value="${esc(pre.id || '')}" placeholder="e.g. shop">
+      <label for="t-prov">Provider:</label><select id="t-prov" class="in">${opts}</select>
+      <label class="t-auto" for="t-ct">Where:</label>
+      <span class="row t-auto">CT <input id="t-ct" class="in" style="width:60px" value="${pre.ct ?? ''}" placeholder="101">
+        <input id="t-file" class="in" style="flex:1" value="${esc(pre.file || '')}" placeholder="/opt/myapp/.env">
+        <button class="b out sm" id="t-detect">Detect</button></span>
+      <label class="t-auto" for="t-var">Variable:</label><input id="t-var" class="in t-auto" placeholder="STRIPE_SECRET_KEY">
+      <label class="t-auto" for="t-reload">Reload:</label><input id="t-reload" class="in t-auto" placeholder="systemctl restart myapp">
+      <label class="t-auto" for="t-check">Check:</label><input id="t-check" class="in t-auto" placeholder="systemctl is-active myapp">
+      <label class="t-man" for="t-where">How to update:</label><input id="t-where" class="in t-man" value="${esc(pre.where || '')}" placeholder="n8n → Credentials → Stripe → paste → Save">
+      <label for="t-name">Key name:</label><input id="t-name" class="in" placeholder="what the provider's console calls it">
+      <label for="t-exp">Expires:</label><span class="row"><input type="date" id="t-exp" class="in"><span class="small">blank = never</span></span>
+    </div>
+    <div class="small" id="t-msg" style="margin-top:8px">Click <b>Detect</b> and KeyRing reads the file and works out the variable and how the app restarts.</div>`,
+    '🔑', async () => {
+      const kind = document.querySelector('[name=t-kind]:checked').value;
+      const v = id => $(id).value.trim();
+      const r = await api('/api/track', {kind, id: v('#t-id'), provider: v('#t-prov'), ct: v('#t-ct'), file: v('#t-file'),
+        var: v('#t-var'), reload: v('#t-reload'), check: v('#t-check'), where: v('#t-where'), key_name: v('#t-name'), expires_at: v('#t-exp')});
+      if (!r.ok) { $('#t-msg').innerHTML = `<b class="warn">${esc(r.error)}</b>`; return false; }
+      const id = v('#t-id');
+      refresh();
+      if (after) setTimeout(() => after(id));
+    }, back);
+  const sync = () => {
+    const manual = document.querySelector('[name=t-kind]:checked').value === 'manual';
+    document.querySelectorAll('.t-auto').forEach(e => e.hidden = manual);
+    document.querySelectorAll('.t-man').forEach(e => e.hidden = !manual);
+  };
+  document.querySelectorAll('[name=t-kind]').forEach(r => r.onchange = sync); sync();
+  $('#t-detect').onclick = async () => {
+    $('#t-msg').textContent = 'Reading the file…';
+    const r = await api('/api/inspect', {ct: $('#t-ct').value, file: $('#t-file').value, hash: pre.hash});
+    if (!r.ok) { $('#t-msg').innerHTML = `<b class="warn">${esc(r.error)}</b>`; return; }
+    if (!$('#t-id').value) $('#t-id').value = r.id;
+    $('#t-prov').value = r.provider_id; $('#t-var').value = r.var;
+    $('#t-reload').value = r.reload; $('#t-check').value = r.check;
+    const others = r.candidates.filter(c => c.var !== r.var);
+    $('#t-msg').innerHTML = (r.reload ? '✔ Found the key and how this app restarts. Check it looks right.'
+        : '<b class="warn">Found the key, but not how this app restarts.</b> Fill in Reload and Check (leave both blank if nothing needs restarting, like a CLI token): e.g. <code>systemctl restart myapp</code> / <code>systemctl is-active myapp</code>, or for compose <code>cd /opt/myapp &amp;&amp; docker compose up -d --force-recreate</code>.')
+      + (others.length ? `<br>Also in this file: ${others.map(c => `<code>${esc(c.var)}</code> (${esc(c.provider)})`).join(', ')}. Track them separately.` : '')
+      + '<br>The first rotation tests Reload and Check and puts the old key back if they fail.';
+  };
+  if (pre.file && pre.ct != null && pre.kind !== 'manual') $('#t-detect').onclick();
+}
+$('#m-add').onclick = () => state.can_edit ? trackDialog() : dialog('Add app', 'Editing from the UI is turned off (<code>ui_can_edit: false</code>). Edit <code>config.json</code>.');
+
+// ---- Live check + leaked keys ----
+$('#m-verify').onclick = () => withBusy('Asking each provider whether each key still works…', async () => {
+  const r = await api('/api/verify', {});
+  await refresh();
+  const rows = Object.entries(r.results).map(([id, x]) => `<li>${x.ok === false ? '⛔' : x.ok ? '✅' : '❔'} <b>${esc(id)}</b>: ${esc(x.msg)}</li>`).join('');
+  dialog('Key check', (r.dead.length ? `<b class="warn">${r.dead.length} dead.</b> The provider rejects these keys, so those apps are broken. Rotate them now.`
+      : 'Every key is still accepted by its provider.') + `<ul>${rows}</ul><span class="small">KeyRing also checks by itself once a day. A dead key turns <code>/health</code> red.</span>`,
+    r.dead.length ? '⛔' : '✅');
 });
+
+$('#m-leak').onclick = () => {
+  dialog('I leaked a key', `Paste the leaked key. KeyRing asks the provider whether it still works, then finds every app, file and process using it.
+    It's only fingerprinted, never stored.<div class="row" style="margin-top:8px"><input type="password" id="l-key" class="in" style="flex:1" placeholder="the leaked key" autocomplete="off" spellcheck="false"></div>`,
+    '🚨', async () => {
+      const key = $('#l-key').value.trim();
+      if (!key) return false;
+      setTimeout(() => withBusy('Checking the key and scanning every container…', async () => showLeak(await api('/api/locate', {key}))));
+    });
+  $('#l-key').focus();
+};
+
+function showLeak(r) {
+  if (!r.ok) return dialog('I leaked a key', esc(r.error), '⛔');
+  $('#sb1').textContent = `Leaked key found in ${r.hits.length} place(s)`;
+  const places = r.hits.map(h => `<li>CT ${h.ct}: ${whereList(h)} ${h.known_as ? '· tracked as <b>' + esc(h.known_as) + '</b>'
+      : h.backup_only ? '· <i>backup copy: delete the file</i>' : `· <b class="warn">not tracked</b> <button class="b out sm" data-track="${r.hits.indexOf(h)}">Track…</button>`}</li>`).join('');
+  dialog(`Leaked ${r.provider} key ${r.fp.display}`, `<div style="max-height:60vh;overflow:auto">
+    ${r.live ? '<p><b class="warn">It still works.</b> Anyone who has it can use it until you delete it at the provider.</p>'
+      : `<p>The provider already rejects it (${esc(r.live_msg)}), so it can't be used. Clean up the copies below.</p>`}
+    <p><b>Found in ${r.hits.length} place${r.hits.length === 1 ? '' : 's'}</b> across ${r.scanned} containers:</p>
+    ${places ? `<ul>${places}</ul>` : '<p class="small">Nowhere in your containers.</p>'}
+    ${r.by_hand.length ? `<p>Also check your hand-kept ${esc(r.provider)} keys: <b>${r.by_hand.map(esc).join(', ')}</b></p>` : ''}
+    <p><b>Fix it:</b></p><ol>
+      <li>Make a new key in the ${esc(r.provider)} console.</li>
+      <li>${r.tracked.length ? `Click <b>Select for rotation</b> below, paste the new key and press <b>Rotate Selected</b>.` : 'Track the places above, then rotate them to the new key.'}</li>
+      ${r.by_hand.length ? '<li>Update the hand-kept ones and click <b>Mark done</b>.</li>' : ''}
+      <li>Delete the leaked key in the ${esc(r.provider)} console.</li></ol>
+    ${r.tracked.length ? `<button class="b out" id="l-select">Select for rotation (${r.tracked.length})</button>` : ''}</div>`, r.live ? '🚨' : '⚠️');
+  const sel = $('#l-select');
+  if (sel) sel.onclick = () => { selected = new Set(r.tracked); closeDialog(); render(); $('#key').focus();
+    $('#sb1').textContent = `Selected ${r.tracked.join(', ')}. Paste the new ${r.provider} key and press Rotate Selected.`; };
+  $('#mbody').querySelectorAll('[data-track]').forEach(b => b.onclick = () => trackHit(r.hits[+b.dataset.track], () => showLeak(r)));
+}
 $('#m-keys').onclick = () => dialog('Supported keys', `KeyRing recognises these keys. ✔ = the scan can spot them by shape.
   <ul>${Object.entries(state.providers).map(([id, p]) => `<li>${p.scan ? '✔' : '&nbsp;&nbsp;&nbsp;'} <b>${esc(p.name)}</b> <code>${esc(p.example)}</code>${p.scan ? '' : ' <span class="small">(no telltale prefix: rotate only)</span>'} <span class="small">"provider": "${esc(id)}"</span></li>`).join('')}</ul>
   Set <code>"provider"</code> on an app in <code>config.json</code>. Want another? A provider is one regex and one test call.`);

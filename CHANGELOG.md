@@ -2,6 +2,23 @@
 
 All notable changes to KeyRing 95. Versions follow [semver](https://semver.org), loosely, because we're very early.
 
+## [0.2.0] - 2026-10-13
+
+*The one-stop shop release: find it, track it, check it, fix it.*
+
+### Added
+- **Track… from the scan.** Every untracked key gets a button. KeyRing reads the file, picks out the variable, and works out how the app restarts: systemd units (every running unit that reads the file), systemd drop-ins (with `daemon-reload`), docker compose, or pm2. Keys only found in a process environment become "update by hand" entries.
+- **Tools ▸ Add app…** with a **Detect** button, for keys the scan can't see
+- **Stop tracking…** in the Edit dialog
+- **Live key checks:** once a day, and on **Tools ▸ Check every key now**, KeyRing asks each provider whether each key still works. Revoked or expired keys show as **Dead key** and `/health` reports `DEAD: …`. Set `check_hours` (default 24, 0 = off).
+- **Tools ▸ I leaked a key…** Paste it: KeyRing says whether it still works, finds every app, file and process using it, offers **Track…** for untracked copies, selects the tracked apps for rotation and lists the steps
+- Keys in systemd `Environment="VAR=…"` lines and compose `- VAR=…` / `VAR: …` entries can be rotated
+- `reload` and `check` are optional, for files with nothing to restart (e.g. a CLI token)
+- `ui_can_edit` (default on) lets the UI write `config.json`. The previous version is kept as `config.json.prev`.
+
+### Changed
+- Scan results name the app in each container rather than every app sharing the key
+
 ## [0.1.1] - 2026-10-13
 
 ### Changed
@@ -44,6 +61,7 @@ All notable changes to KeyRing 95. Versions follow [semver](https://semver.org),
 - HTTP Basic auth (PBKDF2), client network allow-list, no keys at rest, no request logging
 - `install.sh` for Proxmox VE hosts
 
+[0.2.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.2.0
 [0.1.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.1
 [0.1.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.0
 [0.0.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.0.1

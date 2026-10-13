@@ -33,7 +33,7 @@ Each provider is one entry in `PROVIDERS`: a key pattern, a fingerprint shape, a
 - [ ] Docker image for KeyRing itself (for non-Proxmox setups)
 - [ ] Kubernetes Secrets
 - [x] Scan env files on disk, not just process environments *(0.1.0)*
-- [ ] Discovery that suggests config: "Scan" → **Add to config** button
+- [x] Discovery that suggests config: **Track…** on every scan result, plus **Add app…** *(0.2.0)*
 
 ## 0.3: Automate the "update by hand" list
 
@@ -43,6 +43,8 @@ Each provider is one entry in `PROVIDERS`: a key pattern, a fingerprint shape, a
 - [ ] Doppler / Infisical / Vaultwarden as a source of truth
 
 ## 0.4: Reminders that find you
+
+- [x] Daily live check: dead (revoked or expired) keys turn `/health` red *(0.2.0)*
 
 - [ ] Webhook / ntfy / Discord / email when a key enters the warning window
 - [ ] Calendar feed (`.ics`) of upcoming rotations

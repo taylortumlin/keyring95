@@ -9,11 +9,11 @@ One file, Python standard library only. Stores fingerprints and dates, never a k
   python3 keyring95.py           serve
 """
 import base64, datetime as dt, getpass, hashlib, hmac, ipaddress, json, os, re, secrets
-import subprocess, sys, tempfile, threading, time, urllib.request, urllib.error
+import shutil, subprocess, sys, tempfile, threading, time, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.environ.get("KEYRING_CONFIG") or next(
     (p for p in ("/etc/keyring95/config.json", os.path.join(HERE, "config.json")) if os.path.exists(p)),
@@ -205,11 +205,13 @@ def list_hosts():
 # ---------- demo mode ----------
 
 DEMO_FILES = {}
-DEMO_STRAYS = []
+DEMO_PROCS = []
 
 
 def demo_key(pid, tag):
     h = hashlib.sha256(tag.encode()).hexdigest()
+    if tag == "revoked":  # demo test_key rejects keys containing "bad"
+        h = h[:6] + "bad" + h[9:]
     return {"anthropic": f"sk-ant-api03-{h[:40]}AA", "openai": f"sk-proj-{h[:48]}",
             "resend": f"re_{h[:8]}_{h[8:32]}", "groq": f"gsk_{h[:52]}", "github": f"ghp_{h[:36]}",
             "stripe": f"sk_live_{h[:32]}"}[pid]
@@ -219,16 +221,18 @@ def demo_config():
     apps = [("chatbot", 101, "/opt/chatbot/.env", "shared", "anthropic", "ANTHROPIC_API_KEY"),
             ("notes-ai", 102, "/var/lib/notes/.env", "shared", "anthropic", "ANTHROPIC_API_KEY"),
             ("recipe-scanner", 103, "/srv/recipes/.env", "recipes", "anthropic", "ANTHROPIC_API_KEY"),
-            ("support-bot", 104, "/etc/support-bot/env", "support", "anthropic", "ANTHROPIC_API_KEY"),
+            ("support-bot", 104, "/etc/support-bot/env", "revoked", "anthropic", "ANTHROPIC_API_KEY"),
             ("voice-agent", 106, "/opt/voice/.env", "voice", "openai", "OPENAI_API_KEY"),
             ("mailer", 107, "/opt/mailer/.env", "mail", "resend", "RESEND_API_KEY")]
     for _, ct, f, tag, pid, var in apps:
         DEMO_FILES[(ct, f)] = f"PORT=3000\n{var}={demo_key(pid, tag)}\n"
-    # Keys no app is registered for, so the scan has something to find.
-    DEMO_STRAYS.extend([(101, "P", "python", demo_key("groq", "stray")),
-                        (106, "F", "/opt/voice/.env.bak-2026-03", demo_key("openai", "old-voice")),
-                        (107, "F", "/opt/shop/docker-compose.yml", demo_key("stripe", "shop")),
-                        (103, "F", "/root/.config/gh/env", demo_key("github", "ci"))])
+    # Keys no app is registered for, so the scan and Track have something to find.
+    DEMO_FILES[(106, "/opt/voice/.env.bak-2026-03")] = f"OPENAI_API_KEY={demo_key('openai', 'old-voice')}\n"
+    DEMO_FILES[(107, "/opt/shop/docker-compose.yml")] = (
+        "services:\n  shop:\n    image: shop\n    environment:\n"
+        f"      - STRIPE_SECRET_KEY={demo_key('stripe', 'shop')}\n")
+    DEMO_FILES[(103, "/root/.config/gh/env")] = f"GH_TOKEN={demo_key('github', 'ci')}\n"
+    DEMO_PROCS.append((101, "python", demo_key("groq", "stray")))
     return {"rotate_days": 90, "warn_days": 14,
             "apps": [{"id": i, "ct": ct, "file": f, "var": var, "provider": pid,
                       "reload": f"systemctl restart {i}", "check": f"systemctl is-active {i}"}
@@ -248,13 +252,18 @@ def demo_run(app, script, stdin):
         body = DEMO_FILES.get((app["ct"], m.group(1)))
         return (0, body, "") if body else (1, "", "No such file")
     if "/proc/" in script:
+        apps = {(a["ct"], a["file"]) for a in load_config()["apps"]}
         hits = []
         for (ct, f), body in DEMO_FILES.items():
             if ct == app["ct"]:
                 k = body.strip().splitlines()[-1].split("=", 1)[1]
-                hits += [f"P node {k}", f"F {f} {k}"]
-        hits += [f"{kind} {where} {k}" for ct, kind, where, k in DEMO_STRAYS if ct == app["ct"]]
+                hits += [f"F {f} {k}"] + ([f"P node {k}"] if (ct, f) in apps else [])
+        hits += [f"P {comm} {k}" for ct, comm, k in DEMO_PROCS if ct == app["ct"]]
         return 0, "\n".join(hits), ""
+    m = re.match(r"f='([^']+)'", script)  # inspect_file
+    if m:
+        body = DEMO_FILES.get((app["ct"], m.group(1)))
+        return (0, body + "##KR-COMPOSE\n", "") if body else (3, "", "No such file")
     return 0, "active", ""
 
 
@@ -278,6 +287,20 @@ def load_config():
     cfg.setdefault("warn_days", 14)
     cfg.setdefault("manual", [])
     return cfg
+
+
+def save_config(cfg):
+    """Track / Add app / Untrack write the config. The previous version is kept as config.json.prev."""
+    global _demo_cfg
+    if DEMO:
+        _demo_cfg = cfg
+        return
+    tmp = CONFIG + ".tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    shutil.copy2(CONFIG, CONFIG + ".prev")
+    os.replace(tmp, CONFIG)
 
 
 def state_path():
@@ -318,8 +341,13 @@ def valid_date(d):
 
 # ---------- core ----------
 
+# A variable assignment as it appears in .env files, shell, systemd (Environment="VAR=…")
+# and compose files (- VAR=… or VAR: …).
+ASSIGN = r"^([ \t]*(?:-[ \t]*)?(?:export[ \t]+)?(?:Environment=[\"']?)?{var}[\"']?[ \t]*[=:][ \t]*[\"']?)"
+
+
 def var_re(app):
-    return rf"^(\s*(?:export\s+)?{re.escape(app['var'])}\s*=\s*[\"']?)({provider(app)['pattern']})"
+    return ASSIGN.format(var=re.escape(app["var"])) + f"({provider(app)['pattern']})"
 
 
 def read_key(app):
@@ -362,12 +390,18 @@ def snapshot():
                 "expires_at": meta.get("expires_at"), "provider": provider(app)["name"],
                 "provider_id": app.get("provider", "anthropic")}
 
+    checks = st.get("checks", {})
+
     def one(app):
         key, _, err = read_key(app)
         c = common(app, st["apps"].get(app["id"], {}))
-        return {**{k: app.get(k) for k in ("id", "ct", "file", "var", "note")}, **c,
-                "kind": "auto", "fp": fingerprint(key, provider(app)) if key else None,
-                "error": err or (None if key else "variable not found"), "status": c["status"] if key else "error"}
+        fp = fingerprint(key, provider(app)) if key else None
+        chk = checks.get(app["id"])
+        dead = bool(fp and chk and chk["hash"] == fp["hash"] and chk["ok"] is False)
+        return {**{k: app.get(k) for k in ("id", "ct", "file", "var", "note", "reload", "check")}, **c,
+                "kind": "auto", "fp": fp, "checked": chk if chk and fp and chk["hash"] == fp["hash"] else None,
+                "error": err or (None if key else "variable not found") or (chk["msg"] if dead else None),
+                "status": "dead" if dead else c["status"] if key else "error"}
 
     with ThreadPoolExecutor(8) as ex:
         apps = list(ex.map(one, cfg["apps"]))
@@ -379,7 +413,8 @@ def snapshot():
     for a in apps:
         a["shared_with"] = [x for x in shared.get(a["fp"]["hash"], []) if x != a["id"]] if a.get("fp") else []
     return {"apps": apps, "log": st["log"][:60], "rotate_days": cfg["rotate_days"], "warn_days": cfg["warn_days"],
-            "version": __version__, "demo": DEMO,
+            "version": __version__, "demo": DEMO, "can_edit": cfg.get("ui_can_edit", True),
+            "last_check": st.get("last_check"),
             "providers": {pid: {"name": p["name"], "example": p["example"], "scan": p.get("scan", True)}
                           for pid, p in PROVIDERS.items()}}
 
@@ -441,10 +476,14 @@ def rotate_one(app, key):
         return run(app, f"cat > '{app['file']}' && chmod o-rwx '{app['file']}'", stdin=body)
 
     def reload_and_check():
+        if not app.get("reload"):  # nothing to restart: the file is all there is
+            return True, "written"
         rc, _, e = run(app, app["reload"], timeout=180)
         if rc:
             return False, f"reload failed: {e[-200:]}"
         time.sleep(0 if DEMO else 5)
+        if not app.get("check"):
+            return True, "reloaded"
         rc, out, e = run(app, app["check"], timeout=30)
         return rc == 0, (out.strip() or e or "check failed")
 
@@ -457,7 +496,7 @@ def rotate_one(app, key):
         reload_and_check()
         return {"ok": False, "msg": f"{why}; rolled back to old key"}
     fp = fingerprint(old, provider(app))
-    return {"ok": True, "msg": "rotated, reloaded, healthy", "old_hash": fp["hash"], "old_display": fp["display"]}
+    return {"ok": True, "msg": "rotated, reloaded, healthy" if app.get("check") else "rotated, reloaded" if app.get("reload") else "rotated (nothing to restart)", "old_hash": fp["hash"], "old_display": fp["display"]}
 
 
 def edit(app_id, fields):
@@ -495,7 +534,7 @@ def discover():
     known = {}
     for a in snapshot()["apps"]:
         if a.get("fp"):
-            known.setdefault(a["fp"]["hash"], []).append(a["id"])
+            known.setdefault(a["fp"]["hash"], []).append((a["id"], a.get("ct")))
     pattern = "|".join(f"({p['pattern']})" for p in PROVIDERS.values() if p.get("scan", True))
     names = " -o ".join(f"-name {n}" for n in SCAN_NAMES.split())
     script = (
@@ -506,6 +545,11 @@ def discover():
         f"-o -name containers -o -name lxcfs \\) -prune -o -type f \\( {names} \\) -size -512k -print0 "
         "2>/dev/null | xargs -0 -r grep -HoE '" + pattern + "' 2>/dev/null | "
         "while IFS= read -r l; do echo \"F ${l%:*} ${l##*:}\"; done; } | sort -u")
+
+    def tracked_as(h, ct):  # prefer the apps in this container; a shared key is tracked elsewhere too
+        apps = known.get(h, [])
+        here = [i for i, c in apps if c == ct]
+        return ", ".join(here or [i for i, _ in apps]) or None
 
     def scan(host):
         try:
@@ -521,7 +565,7 @@ def discover():
                 continue
             fp = fingerprint(k, PROVIDERS[pid])
             hit = keys.setdefault(fp["hash"], {"ct": host["ct"], "fp": fp, "provider": PROVIDERS[pid]["name"],
-                                               "provider_id": pid, "known_as": ", ".join(known.get(fp["hash"], [])) or None,
+                                               "provider_id": pid, "known_as": tracked_as(fp["hash"], host["ct"]),
                                                "processes": [], "files": []})
             hit["processes" if kind == "P" else "files"].append(where)
         for h in keys.values():
@@ -537,13 +581,235 @@ def discover():
     return {"hits": hits, "scanned": len(hosts)}
 
 
+# ---------- live checks: is each key still accepted? ----------
+
+def verify():
+    """Ask each provider whether each app's key still works. Catches keys revoked or expired early.
+    Network trouble is recorded as unknown, never as dead."""
+    cfg = load_config()
+
+    def one(app):
+        key, _, _ = read_key(app)
+        if not key:
+            return app["id"], None
+        ok, msg = test_key(key, provider(app))
+        if not ok and msg.startswith("Could not reach"):
+            ok = None
+        return app["id"], {"t": now(), "ok": ok, "msg": msg, "hash": fingerprint(key, provider(app))["hash"]}
+
+    with ThreadPoolExecutor(8) as ex:
+        res = {i: r for i, r in ex.map(one, cfg["apps"]) if r}
+    dead = [i for i, r in res.items() if r["ok"] is False]
+    unknown = [i for i, r in res.items() if r["ok"] is None]
+    with LOCK:
+        st = load_state()
+        st.setdefault("checks", {}).update(res)
+        st["last_check"] = now()
+        if dead or unknown or not st["log"] or not st["log"][0]["msg"].startswith("Checked"):
+            why = ", ".join(f"{i} ({res[i]['msg']})" for i in dead)
+            log(st, f"Checked {len(res)} keys with their providers: " + (f"DEAD {why}" if dead else "all accepted")
+                + (f"; could not reach provider for {', '.join(unknown)}" if unknown else ""))
+        save_state(st)
+    return {"results": res, "dead": dead, "unknown": unknown}
+
+
+def check_loop(hours):
+    time.sleep(90)  # let the host settle after a boot
+    while True:
+        try:
+            verify()
+        except Exception as e:
+            print(f"key check failed: {e}", flush=True)
+        time.sleep(hours * 3600)
+
+
+# ---------- tracking: add keys from the UI instead of editing config.json ----------
+
+ID_RE, VAR_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,40}", r"[A-Za-z_][A-Za-z0-9_]{0,80}"
+PATH_RE = r"/[^'\0\n\r]{1,300}"
+GENERIC_DIRS = {"opt", "etc", "srv", "root", "home", "lib", "var", "usr", "local", "config", ".config", "app", "data"}
+
+
+def inspect_file(ct, path, want=None):
+    """Look at a file in a container and suggest how to track it: which variable holds a key,
+    which provider, and how the app picks up a new one. Returns no key material."""
+    if not re.fullmatch(PATH_RE, path or ""):
+        return {"ok": False, "error": "File must be an absolute path."}
+    try:
+        ct = int(ct)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Container ID must be a number."}
+    script = (f"f='{path}'; d=$(dirname \"$f\"); export HOME=${{HOME:-/root}}\n"
+              "cat \"$f\" || exit 3\n"
+              "echo '##KR-COMPOSE'; ls \"$d\"/docker-compose*.y*ml \"$d\"/compose*.y*ml 2>/dev/null\n"
+              # units that mention the file (or run from its folder), with whether they're running now
+              "echo '##KR-UNITS'; for u in $(grep -lsF -e \"$f\" -e \"WorkingDirectory=$d\""
+              " /etc/systemd/system/*.service /etc/systemd/system/*.service.d/*.conf /lib/systemd/system/*.service"
+              " 2>/dev/null); do n=$(basename \"$u\"); case \"$u\" in *.service.d/*) n=$(basename \"$(dirname \"$u\")\" .d);; esac;"
+              " echo \"$n $(systemctl show -p ActiveState --value \"$n\" 2>/dev/null)\"; done\n"
+              "echo '##KR-PM2'; command -v pm2 >/dev/null 2>&1 && pm2 jlist 2>/dev/null | tail -n 1\n")
+    try:
+        rc, out, err = run({"ct": ct, "id": f"ct{ct}"}, script, timeout=30)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Timed out reading the container."}
+    if rc == 3 or "##KR-COMPOSE" not in out:
+        return {"ok": False, "error": err or f"Can't read {path} in CT {ct}."}
+    body, _, rest = out.partition("##KR-COMPOSE")
+    sect = dict(re.findall(r"##KR-(\w+)\n?(.*?)(?=##KR-|\Z)", "##KR-COMPOSE" + rest, re.S))
+    if DEMO:
+        sect = {"COMPOSE": "", "UNITS": "", "PM2": ""}
+
+    cands = []
+    for m in re.finditer(ASSIGN.format(var=f"({VAR_NAME})") + r"([^\s\"'#]+)", body, re.M):
+        var, val = m.group(2), m.group(3)
+        pid = detect(val)
+        if pid:
+            fp = fingerprint(val, PROVIDERS[pid])
+            cands.append({"var": var, "provider_id": pid, "provider": PROVIDERS[pid]["name"], "fp": fp})
+    if not cands:
+        return {"ok": False, "error": f"No key KeyRing recognises in {path}."}
+    pick = next((c for c in cands if c["fp"]["hash"] == want), cands[0])
+
+    d = os.path.dirname(path)
+    name, reload_, check = None, "", ""
+    # Every running unit that reads this file needs the restart (one-shots pick it up next run).
+    units = [l.split() for l in sect.get("UNITS", "").splitlines() if l.strip()]
+    running = sorted({u[0] for u in units if len(u) > 1 and u[1] in ("active", "activating", "reloading")})
+    if re.match(r"/(etc|lib)/systemd/system/", path):
+        unit = os.path.basename(os.path.dirname(path))[:-2] if path.endswith(".conf") else os.path.basename(path)
+        name, reload_ = unit.removesuffix(".service"), f"systemctl daemon-reload && systemctl restart {unit}"
+        check = f"systemctl is-active {unit}"
+    elif running:
+        name = min(running, key=len).removesuffix(".service")  # sprout.service over sprout-notify.service
+        reload_, check = f"systemctl restart {' '.join(running)}", f"systemctl is-active {' '.join(running)}"
+    elif sect.get("COMPOSE", "").strip() or re.search(r"compose[^/]*\.ya?ml$", path):
+        name = os.path.basename(d)
+        reload_ = f"cd {d} && docker compose up -d --force-recreate"
+        check = f"cd {d} && test -n \"$(docker compose ps -q --status running)\""
+    else:
+        try:
+            procs = json.loads(sect.get("PM2", "").strip() or "[]")
+        except ValueError:
+            procs = []
+        # the pm2 app that mentions this file, else the one running from its folder, else the only one
+        p = (next((p for p in procs if path in json.dumps(p.get("pm2_env") or {})), None)
+             or next((p for p in procs if (p.get("pm2_env") or {}).get("pm_cwd", "").rstrip("/") == d), None)
+             or (procs[0] if len(procs) == 1 else None))
+        if p:
+            name = p.get("name")
+            reload_, check = f"pm2 restart {name} --update-env", f"pm2 describe {name} | grep -q online"
+        procs = None  # holds other apps' env; drop it
+    if not name:
+        parts = [x for x in d.split("/") if x and x not in GENERIC_DIRS]
+        name = parts[-1] if parts else f"ct{ct}"
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", name).strip("-.") or f"ct{ct}"
+    taken = {a["id"] for a in load_config()["apps"] + load_config()["manual"]}
+    if name in taken:
+        name = f"{name}-{pick['provider_id']}"
+    return {"ok": True, "id": name, "ct": ct, "file": path, "var": pick["var"], "provider_id": pick["provider_id"],
+            "reload": reload_, "check": check, "candidates": cands,
+            "how": "found" if reload_ else "unknown"}
+
+
+def track(b):
+    """Add an app (KeyRing rotates it) or a by-hand entry, from the UI."""
+    cfg = load_config()
+    if not cfg.get("ui_can_edit", True):
+        return {"ok": False, "error": "Editing from the UI is turned off (ui_can_edit: false). Edit config.json."}
+    s = lambda k: str(b.get(k) or "").strip()
+    app_id, pid, kind = s("id"), s("provider") or "anthropic", s("kind") or "auto"
+    if not re.fullmatch(ID_RE, app_id):
+        return {"ok": False, "error": "Name: letters, digits, dot, dash or underscore."}
+    if app_id in {a["id"] for a in cfg["apps"] + cfg["manual"]}:
+        return {"ok": False, "error": f"There's already an app called {app_id}."}
+    if pid not in PROVIDERS:
+        return {"ok": False, "error": "Unknown provider."}
+    if kind == "manual":
+        entry = {"id": app_id, "provider": pid, "where": s("where") or "Update by hand"}
+    else:
+        entry = {"id": app_id, "provider": pid, "ct": None, "file": s("file"), "var": s("var"),
+                 "reload": s("reload"), "check": s("check")}
+        try:
+            entry["ct"] = int(s("ct"))
+        except ValueError:
+            return {"ok": False, "error": "Container ID must be a number."}
+        if not re.fullmatch(PATH_RE, entry["file"]):
+            return {"ok": False, "error": "File must be an absolute path."}
+        if not re.fullmatch(VAR_NAME, entry["var"]):
+            return {"ok": False, "error": "Variable: letters, digits and underscores."}
+        if "\n" in entry["reload"] + entry["check"]:
+            return {"ok": False, "error": "Reload and check are one line each."}
+        if entry["check"] and not entry["reload"]:
+            return {"ok": False, "error": "A check needs a reload to check."}
+        for k in ("reload", "check"):  # blank = nothing to restart (e.g. a CLI token file)
+            if not entry[k]:
+                del entry[k]
+        key, _, err = read_key(entry)
+        if not key:
+            return {"ok": False, "error": err or f"No {PROVIDERS[pid]['name']} key in {entry['var']} in {entry['file']}."}
+    if s("note"):
+        entry["note"] = s("note")
+    with LOCK:
+        cfg = load_config()
+        cfg["manual" if kind == "manual" else "apps"].append(entry)
+        save_config(cfg)
+        st = load_state()
+        meta = {"rotated_at": valid_date(s("rotated_at")), "expires_at": valid_date(s("expires_at")),
+                "key_name": s("key_name") or None}
+        if any(meta.values()):
+            st["apps"][app_id] = meta
+        log(st, f"Now tracking {app_id}" + (" (by hand)" if kind == "manual" else f": CT {entry['ct']} {entry['file']}"))
+        save_state(st)
+    return {"ok": True}
+
+
+def untrack(app_id):
+    cfg = load_config()
+    if not cfg.get("ui_can_edit", True):
+        return {"ok": False, "error": "Editing from the UI is turned off (ui_can_edit: false)."}
+    with LOCK:
+        cfg = load_config()
+        before = len(cfg["apps"]) + len(cfg["manual"])
+        cfg["apps"] = [a for a in cfg["apps"] if a["id"] != app_id]
+        cfg["manual"] = [a for a in cfg["manual"] if a["id"] != app_id]
+        if len(cfg["apps"]) + len(cfg["manual"]) == before:
+            return {"ok": False, "error": "unknown app"}
+        save_config(cfg)
+        st = load_state()
+        st["apps"].pop(app_id, None)
+        st.get("checks", {}).pop(app_id, None)
+        log(st, f"Stopped tracking {app_id} (the app and its key were not touched)")
+        save_state(st)
+    return {"ok": True}
+
+
+def locate(key):
+    """'I leaked a key': is it still live, and where does it live? Searches by fingerprint."""
+    key = key.strip()
+    pid = detect(key)
+    if not pid:
+        return {"ok": False, "error": "KeyRing doesn't recognise that kind of key."}
+    prov = PROVIDERS[pid]
+    fp = fingerprint(key, prov)
+    live, live_msg = test_key(key, prov)
+    snap = snapshot()
+    tracked = [a["id"] for a in snap["apps"] if a.get("fp") and a["fp"]["hash"] == fp["hash"]]
+    by_hand = [a["id"] for a in snap["apps"] if a["kind"] == "manual" and a["provider_id"] == pid]
+    scan = discover()
+    hits = [h for h in scan["hits"] if h["fp"]["hash"] == fp["hash"]]
+    return {"ok": True, "fp": fp, "provider": prov["name"], "provider_id": pid, "live": live, "live_msg": live_msg,
+            "tracked": tracked, "by_hand": by_hand, "hits": hits, "scanned": scan["scanned"]}
+
+
 def health_text():
     snap = snapshot()
-    due = [a["id"] for a in snap["apps"] if a["status"] in ("overdue", "due-soon")]
-    broken = [a["id"] for a in snap["apps"] if a["status"] == "error"]
-    if not due and not broken:
+    by = lambda *s: [a["id"] for a in snap["apps"] if a["status"] in s]
+    due, broken, dead = by("overdue", "due-soon"), by("error"), by("dead")
+    if not due and not broken and not dead:
         return 200, "KEYS OK"
-    return 503, "KEYS DUE: " + ", ".join(due) + (f" | UNREADABLE: {', '.join(broken)}" if broken else "")
+    parts = ([f"DEAD: {', '.join(dead)}"] if dead else []) + ([f"KEYS DUE: {', '.join(due)}"] if due else []) \
+        + ([f"UNREADABLE: {', '.join(broken)}"] if broken else [])
+    return 503, " | ".join(parts)
 
 
 # ---------- auth + http ----------
@@ -644,6 +910,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, edit(b.get("id"), {k: b[k] for k in ("rotated_at", "expires_at", "key_name") if k in b}))
             elif self.path == "/api/discover":
                 self.send(200, discover())
+            elif self.path == "/api/inspect":
+                self.send(200, inspect_file(b.get("ct"), b.get("file"), b.get("hash")))
+            elif self.path == "/api/track":
+                self.send(200, track(b))
+            elif self.path == "/api/untrack":
+                self.send(200, untrack(b.get("id")))
+            elif self.path == "/api/verify":
+                self.send(200, verify())
+            elif self.path == "/api/locate":
+                self.send(200, locate(b.get("key", "")))
             else:
                 self.send(404, {"error": "not found"})
         except Exception as e:
@@ -652,6 +928,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(bind):
     Handler.allow = [ipaddress.ip_network(n) for n in load_config().get("allow", DEFAULT_ALLOW)]
+    hours = load_config().get("check_hours", 24)
+    if hours and not DEMO:
+        threading.Thread(target=check_loop, args=(hours,), daemon=True).start()
     print(f"KeyRing 95 v{__version__} on http://{bind}:{PORT}" + ("  (demo mode)" if DEMO else ""), flush=True)
     ThreadingHTTPServer((bind, PORT), Handler).serve_forever()
 
