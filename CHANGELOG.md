@@ -2,6 +2,13 @@
 
 All notable changes to KeyRing 95. Versions follow [semver](https://semver.org), loosely, because we're very early.
 
+## [0.2.2] - 2026-10-13
+
+### Fixed
+- **Track… could pick a dead copy.** With release folders (`releases/<date>/.env`), every old release holds the same key, and Track picked the first one listed, which nothing reads. The scan now records each process's working folder, and Track prefers the `.env` in the running app's folder (never a backup).
+- **The scan skipped linked env files.** Release folders often link `.env` to one shared copy; the scan now follows links, and Track records the real file the link points to, so it survives the next deploy.
+- pm2 restart detection also matches apps whose folder holds the link rather than the real file
+
 ## [0.2.1] - 2026-10-13
 
 ### Added
@@ -68,6 +75,7 @@ All notable changes to KeyRing 95. Versions follow [semver](https://semver.org),
 - HTTP Basic auth (PBKDF2), client network allow-list, no keys at rest, no request logging
 - `install.sh` for Proxmox VE hosts
 
+[0.2.2]: https://github.com/taylortumlin/keyring95/releases/tag/v0.2.2
 [0.2.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.2.1
 [0.2.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.2.0
 [0.1.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.1

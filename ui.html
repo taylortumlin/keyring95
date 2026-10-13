@@ -423,7 +423,7 @@ function showScan(r) {
 
 // A scan hit -> Track dialog. Found in a file: KeyRing can rotate it. Only in a process: by hand.
 function trackHit(h, back) {
-  const file = h.files.find(f => !isBackup(f));
+  const file = h.live_file || h.files.find(f => !isBackup(f));  // prefer the running app's own folder
   const done = id => { h.known_as = id; back && back(); };
   if (file) return trackDialog({ct: h.ct, file, hash: h.fp.hash, provider_id: h.provider_id,
     title: `Track ${h.provider} key ${h.fp.display}`}, done, back);
@@ -476,11 +476,13 @@ function trackDialog(pre = {}, after, back) {
     if (!r.ok) { $('#t-msg').innerHTML = `<b class="warn">${esc(r.error)}</b>`; return; }
     if (!$('#t-id').value) $('#t-id').value = r.id;
     $('#t-prov').value = r.provider_id; $('#t-var').value = r.var;
+    $('#t-file').value = r.file;
     $('#t-reload').value = r.reload; $('#t-check').value = r.check;
     const others = r.candidates.filter(c => c.var !== r.var);
     $('#t-msg').innerHTML = (r.reload ? '✔ Found the key and how this app restarts. Check it looks right.'
         : '<b class="warn">Found the key, but not how this app restarts.</b> Fill in Reload and Check (leave both blank if nothing needs restarting, like a CLI token): e.g. <code>systemctl restart myapp</code> / <code>systemctl is-active myapp</code>, or for compose <code>cd /opt/myapp &amp;&amp; docker compose up -d --force-recreate</code>.')
       + (others.length ? `<br>Also in this file: ${others.map(c => `<code>${esc(c.var)}</code> (${esc(c.provider)})`).join(', ')}. Track them separately.` : '')
+      + (r.linked_from ? `<br>${esc(r.linked_from)} is a link, so KeyRing tracks the real file it points to.` : '')
       + '<br>The first rotation tests Reload and Check and puts the old key back if they fail.';
   };
   if (pre.file && pre.ct != null && pre.kind !== 'manual') $('#t-detect').onclick();

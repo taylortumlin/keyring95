@@ -13,7 +13,7 @@ import shutil, subprocess, sys, tempfile, threading, time, urllib.request, urlli
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.environ.get("KEYRING_CONFIG") or next(
     (p for p in ("/etc/keyring95/config.json", os.path.join(HERE, "config.json")) if os.path.exists(p)),
@@ -257,13 +257,13 @@ def demo_run(app, script, stdin):
         for (ct, f), body in DEMO_FILES.items():
             if ct == app["ct"]:
                 k = body.strip().splitlines()[-1].split("=", 1)[1]
-                hits += [f"F {f} {k}"] + ([f"P node {k}"] if (ct, f) in apps else [])
-        hits += [f"P {comm} {k}" for ct, comm, k in DEMO_PROCS if ct == app["ct"]]
+                hits += [f"F {f} {k}"] + ([f"P node\t{os.path.dirname(f)} {k}"] if (ct, f) in apps else [])
+        hits += [f"P {comm}\t/srv {k}" for ct, comm, k in DEMO_PROCS if ct == app["ct"]]
         return 0, "\n".join(hits), ""
     m = re.match(r"f='([^']+)'", script)  # inspect_file
     if m:
         body = DEMO_FILES.get((app["ct"], m.group(1)))
-        return (0, body + "##KR-COMPOSE\n", "") if body else (3, "", "No such file")
+        return (0, body + f"##KR-REAL\n{m.group(1)}\n##KR-COMPOSE\n", "") if body else (3, "", "No such file")
     return 0, "active", ""
 
 
@@ -524,6 +524,7 @@ def edit(app_id, fields):
 
 # Where scan looks on disk: env-ish files under the usual app homes. Apps that load .env
 # themselves (dotenv) never show the key in /proc/*/environ, so processes alone miss them.
+BACKUP_RE = re.compile(r"\.(bak|orig|old)|backup|attic", re.I)
 SCAN_DIRS = "/opt /srv /etc /var/lib /root /home /usr/local"
 SCAN_NAMES = ("'.env*' '*.env' env 'docker-compose*.y*ml' 'compose*.y*ml' '*.service' "
               "'config.json' 'secrets*' '*.conf'")
@@ -538,11 +539,11 @@ def discover():
     pattern = "|".join(f"({p['pattern']})" for p in PROVIDERS.values() if p.get("scan", True))
     names = " -o ".join(f"-name {n}" for n in SCAN_NAMES.split())
     script = (
-        "{ for p in /proc/[0-9]*; do c=$(cat $p/comm 2>/dev/null); "
+        "{ for p in /proc/[0-9]*; do c=$(cat $p/comm 2>/dev/null); w=$(readlink $p/cwd 2>/dev/null); "
         "tr '\\0' '\\n' < $p/environ 2>/dev/null | grep -oE '" + pattern + "' | "
-        "while read -r k; do echo \"P $c $k\"; done; done; "
+        "while read -r k; do printf 'P %s\\t%s %s\\n' \"$c\" \"$w\" \"$k\"; done; done; "
         f"find {SCAN_DIRS} -maxdepth 4 \\( -name node_modules -o -name .git -o -name docker "
-        f"-o -name containers -o -name lxcfs \\) -prune -o -type f \\( {names} \\) -size -512k -print0 "
+        f"-o -name containers -o -name lxcfs \\) -prune -o \\( -type f -o -type l \\) \\( {names} \\) -size -512k -print0 "
         "2>/dev/null | xargs -0 -r grep -HoE '" + pattern + "' 2>/dev/null | "
         "while IFS= read -r l; do echo \"F ${l%:*} ${l##*:}\"; done; } | sort -u")
 
@@ -566,12 +567,22 @@ def discover():
             fp = fingerprint(k, PROVIDERS[pid])
             hit = keys.setdefault(fp["hash"], {"ct": host["ct"], "fp": fp, "provider": PROVIDERS[pid]["name"],
                                                "provider_id": pid, "known_as": tracked_as(fp["hash"], host["ct"]),
-                                               "processes": [], "files": []})
-            hit["processes" if kind == "P" else "files"].append(where)
+                                               "processes": [], "files": [], "cwds": []})
+            if kind == "P":
+                comm, _, cwd = where.partition("\t")
+                hit["processes"].append(comm)
+                if cwd and cwd != "/":
+                    hit["cwds"].append(cwd)
+            else:
+                hit["files"].append(where)
         for h in keys.values():
-            h["processes"] = sorted(set(h["processes"]))
-            h["backup_only"] = not h["processes"] and all(
-                re.search(r"\.(bak|orig|old)|backup|attic", f, re.I) for f in h["files"])
+            h["processes"], h["cwds"] = sorted(set(h["processes"])), sorted(set(h["cwds"]))
+            # The file the running app reads is most likely the one in its working folder:
+            # with releases/ folders, an old release's .env holds the same key but nothing reads it.
+            live = [f for f in h["files"] if os.path.dirname(f) in h["cwds"] and not BACKUP_RE.search(f)]
+            h["files"] = live + [f for f in h["files"] if f not in live]
+            h["live_file"] = live[0] if live else None
+            h["backup_only"] = not h["processes"] and all(BACKUP_RE.search(f) for f in h["files"])
         return list(keys.values())
 
     hosts = list_hosts()
@@ -641,6 +652,7 @@ def inspect_file(ct, path, want=None):
         return {"ok": False, "error": "Container ID must be a number."}
     script = (f"f='{path}'; d=$(dirname \"$f\"); export HOME=${{HOME:-/root}}\n"
               "cat \"$f\" || exit 3\n"
+              "echo '##KR-REAL'; readlink -f \"$f\"\n"
               "echo '##KR-COMPOSE'; ls \"$d\"/docker-compose*.y*ml \"$d\"/compose*.y*ml 2>/dev/null\n"
               # units that mention the file (or run from its folder), with whether they're running now
               "echo '##KR-UNITS'; for u in $(grep -lsF -e \"$f\" -e \"WorkingDirectory=$d\""
@@ -652,10 +664,14 @@ def inspect_file(ct, path, want=None):
         rc, out, err = run({"ct": ct, "id": f"ct{ct}"}, script, timeout=30)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "Timed out reading the container."}
-    if rc == 3 or "##KR-COMPOSE" not in out:
+    if rc == 3 or "##KR-REAL" not in out:
         return {"ok": False, "error": err or f"Can't read {path} in CT {ct}."}
-    body, _, rest = out.partition("##KR-COMPOSE")
-    sect = dict(re.findall(r"##KR-(\w+)\n?(.*?)(?=##KR-|\Z)", "##KR-COMPOSE" + rest, re.S))
+    body, _, rest = out.partition("##KR-REAL")
+    sect = dict(re.findall(r"##KR-(\w+)\n?(.*?)(?=##KR-|\Z)", "##KR-REAL" + rest, re.S))
+    real = sect.get("REAL", "").strip()
+    linked_from = None
+    if real and real != path and re.fullmatch(PATH_RE, real):
+        linked_from, path = path, real  # track the target: a release folder's link goes stale on redeploy
     if DEMO:
         sect = {"COMPOSE": "", "UNITS": "", "PM2": ""}
 
@@ -692,8 +708,10 @@ def inspect_file(ct, path, want=None):
         except ValueError:
             procs = []
         # the pm2 app that mentions this file, else the one running from its folder, else the only one
-        p = (next((p for p in procs if path in json.dumps(p.get("pm2_env") or {})), None)
-             or next((p for p in procs if (p.get("pm2_env") or {}).get("pm_cwd", "").rstrip("/") == d), None)
+        paths = {path, linked_from} - {None}
+        dirs = {os.path.dirname(x) for x in paths}
+        p = (next((p for p in procs if any(x in json.dumps(p.get("pm2_env") or {}) for x in paths)), None)
+             or next((p for p in procs if (p.get("pm2_env") or {}).get("pm_cwd", "").rstrip("/") in dirs), None)
              or (procs[0] if len(procs) == 1 else None))
         if p:
             name = p.get("name")
@@ -708,7 +726,7 @@ def inspect_file(ct, path, want=None):
         name = f"{name}-{pick['provider_id']}"
     return {"ok": True, "id": name, "ct": ct, "file": path, "var": pick["var"], "provider_id": pick["provider_id"],
             "reload": reload_, "check": check, "candidates": cands,
-            "how": "found" if reload_ else "unknown"}
+            "how": "found" if reload_ else "unknown", "linked_from": linked_from}
 
 
 def track(b):
