@@ -2,6 +2,13 @@
 
 All notable changes to KeyRing 95. Versions follow [semver](https://semver.org), loosely, because we're very early.
 
+## [0.2.1] - 2026-10-13
+
+### Added
+- **Column filters:** a filter row under the headers. Type to filter App, Key in use and Key name; pick from lists for CT, Provider, Rotated (last 30 days / over 90 days / never), Expires (within 30 days / has a date / never) and Status (needs attention, dead, overdue, by hand…). **Clear** resets them. Filters are remembered.
+- **Sortable columns:** click a header to sort ascending, again for descending, a third time to turn it off. Status sorts by urgency.
+- "Showing 6 of 14" when a filter is on. Select-all picks only the rows shown, and changing a filter unselects hidden rows, so you never rotate a row you can't see.
+
 ## [0.2.0] - 2026-10-13
 
 *The one-stop shop release: find it, track it, check it, fix it.*
@@ -61,6 +68,7 @@ All notable changes to KeyRing 95. Versions follow [semver](https://semver.org),
 - HTTP Basic auth (PBKDF2), client network allow-list, no keys at rest, no request logging
 - `install.sh` for Proxmox VE hosts
 
+[0.2.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.2.1
 [0.2.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.2.0
 [0.1.1]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.1
 [0.1.0]: https://github.com/taylortumlin/keyring95/releases/tag/v0.1.0

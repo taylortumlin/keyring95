@@ -13,7 +13,7 @@ import shutil, subprocess, sys, tempfile, threading, time, urllib.request, urlli
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.environ.get("KEYRING_CONFIG") or next(
     (p for p in ("/etc/keyring95/config.json", os.path.join(HERE, "config.json")) if os.path.exists(p)),

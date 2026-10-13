@@ -43,6 +43,14 @@ legend{position:absolute;top:-8px;left:8px;background:var(--face);padding:0 4px}
 table{border-collapse:collapse;width:100%;background:#fff}
 th{position:sticky;top:0;text-align:left;font-weight:normal;padding:3px 6px;white-space:nowrap}
 td{padding:3px 6px;white-space:nowrap;border-bottom:1px dotted #ddd;vertical-align:top}
+/* Column headers: click to sort; the row under them filters. */
+th[data-sort]{cursor:default;user-select:none}
+th[data-sort]:active{box-shadow:inset 1px 1px var(--lo),inset -1px -1px var(--hi)}
+th .arr{font-size:9px;margin-left:4px}
+tr.filt th{top:24px;padding:2px 3px;background:var(--face);z-index:1}
+tr.filt input,tr.filt select{width:100%;min-width:56px;font:inherit;font-size:11px;padding:1px 2px;border:0}
+tr.filt select{background:#fff}
+tr.filt .on{outline:2px solid var(--navy);outline-offset:-2px}
 tr.sel td{background:var(--navy);color:#fff}
 tr.sel td .fp{color:#fff}
 tr.manual td{background:#f4f4ea}
@@ -100,10 +108,26 @@ select.in{font:inherit;padding:2px}
   <div class="body">
     <fieldset><legend>Keys</legend>
       <div class="lv in"><table>
-        <thead><tr class="out"><th class="out"><input type="checkbox" id="all" aria-label="Select all"></th><th class="out">App</th><th class="out">CT</th><th class="out">Provider</th><th class="out">Key in use</th><th class="out">Key name</th><th class="out">Rotated</th><th class="out">Expires</th><th class="out">Status</th><th class="out"></th></tr></thead>
+        <thead><tr class="out"><th class="out"><input type="checkbox" id="all" aria-label="Select all shown"></th><th class="out" data-sort="id">App</th><th class="out" data-sort="ct">CT</th><th class="out" data-sort="provider">Provider</th><th class="out" data-sort="key">Key in use</th><th class="out" data-sort="key_name">Key name</th><th class="out" data-sort="rotated_at">Rotated</th><th class="out" data-sort="expires_at">Expires</th><th class="out" data-sort="status">Status</th><th class="out"></th></tr>
+          <tr class="filt">
+            <th></th>
+            <th><input type="search" class="in" data-f="id" placeholder="Filter…" aria-label="Filter by app"></th>
+            <th><select class="in" data-f="ct" aria-label="Filter by container"></select></th>
+            <th><select class="in" data-f="provider" aria-label="Filter by provider"></select></th>
+            <th><input type="search" class="in" data-f="key" placeholder="Filter…" aria-label="Filter by key"></th>
+            <th><input type="search" class="in" data-f="key_name" placeholder="Filter…" aria-label="Filter by key name"></th>
+            <th><select class="in" data-f="rotated" aria-label="Filter by rotation date">
+              <option value="">(All)</option><option value="30">Last 30 days</option><option value="old">Over 90 days ago</option><option value="none">Never</option></select></th>
+            <th><select class="in" data-f="expires" aria-label="Filter by expiry">
+              <option value="">(All)</option><option value="30">Within 30 days</option><option value="set">Has a date</option><option value="never">Never</option></select></th>
+            <th><select class="in" data-f="status" aria-label="Filter by status">
+              <option value="">(All)</option><option value="attn">Needs attention</option><option value="ok">OK</option><option value="due-soon">Due soon</option>
+              <option value="overdue">Overdue</option><option value="dead">Dead key</option><option value="error">Error</option><option value="manual">✋ By hand</option></select></th>
+            <th><button class="b out sm" id="f-clear" title="Clear all filters">Clear</button></th>
+          </tr></thead>
         <tbody id="rows"><tr><td colspan="10">Reading containers…</td></tr></tbody>
       </table></div>
-      <div class="small" style="margin-top:4px">Click a key fingerprint to select every app on that key. ✋ rows can't be reached from here: update them by hand, then click <b>Mark done</b>.</div>
+      <div class="small" style="margin-top:4px"><span id="shown"></span>Click a key fingerprint to select every app on that key. ✋ rows can't be reached from here: update them by hand, then click <b>Mark done</b>.</div>
     </fieldset>
 
     <fieldset><legend>Rotate</legend>
@@ -175,8 +199,84 @@ function statusCell(a) {
 }
 const date = d => d ? esc(d.slice(0, 10)) : '—';
 
+// ---- Filters + sorting (kept across reloads) ----
+let filters = JSON.parse(localStorage.getItem('kr-filters') || '{}');
+let sort = JSON.parse(localStorage.getItem('kr-sort') || '{"col":null,"dir":1}');
+const daysAgo = d => d ? (Date.now() - new Date(d.slice(0, 10))) / 864e5 : null;
+const daysTo = d => d ? (new Date(d.slice(0, 10)) - Date.now()) / 864e5 : null;
+const has = (v, q) => String(v ?? '').toLowerCase().includes(q.toLowerCase());
+const SEVERITY = {dead: 0, error: 1, overdue: 2, 'due-soon': 3, ok: 4};
+const sortVal = {
+  id: a => a.id, ct: a => a.ct ?? 1e9, provider: a => a.provider, key: a => a.fp ? a.fp.display : '~',
+  key_name: a => a.key_name || '~', rotated_at: a => a.rotated_at || '', expires_at: a => a.expires_at || '9999',
+  status: a => [SEVERITY[a.status] ?? 5, a.days_left ?? -1e9],
+};
+const TESTS = {
+  id: (a, q) => has(a.id, q) || has(a.note, q),
+  ct: (a, q) => String(a.ct ?? 'none') === q,
+  provider: (a, q) => a.provider_id === q,
+  key: (a, q) => has(a.fp && a.fp.display, q) || has(a.where, q) || has(a.shared_with.join(' '), q) || (a.kind === 'manual' && has('by hand', q)),
+  key_name: (a, q) => has(a.key_name || '?', q),
+  rotated: (a, q) => q === 'none' ? !a.rotated_at : q === '30' ? daysAgo(a.rotated_at) !== null && daysAgo(a.rotated_at) <= 30
+    : daysAgo(a.rotated_at) !== null && daysAgo(a.rotated_at) > 90,
+  expires: (a, q) => q === 'never' ? !a.expires_at : q === 'set' ? !!a.expires_at : a.expires_at && daysTo(a.expires_at) <= 30,
+  status: (a, q) => q === 'manual' ? a.kind === 'manual' : q === 'attn' ? a.status !== 'ok' : a.status === q,
+};
+function visible() {
+  const rows = state.apps.filter(a => Object.entries(filters).every(([k, q]) => !q || TESTS[k](a, q)));
+  if (sort.col) {
+    const f = sortVal[sort.col];
+    rows.sort((x, y) => { const a = f(x), b = f(y); return (a < b ? -1 : a > b ? 1 : 0) * sort.dir; });
+  }
+  return rows;
+}
+// Dropdowns list only values that exist; a stale saved choice is dropped.
+function fillFilterOptions() {
+  const opt = (sel, pairs) => {
+    const cur = filters[sel.dataset.f] || '';
+    sel.innerHTML = '<option value="">(All)</option>' + pairs.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('');
+    sel.value = pairs.some(([v]) => v === cur) ? cur : '';
+    if (sel.value !== cur) delete filters[sel.dataset.f];
+  };
+  const cts = [...new Set(state.apps.map(a => String(a.ct ?? 'none')))].sort((a, b) => (+a || 1e9) - (+b || 1e9));
+  opt($('[data-f=ct]'), cts.map(c => [c, c === 'none' ? '(none)' : c]));
+  const provs = [...new Map(state.apps.map(a => [a.provider_id, a.provider])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  opt($('[data-f=provider]'), provs);
+}
+document.querySelectorAll('[data-f]').forEach(el => {
+  el.value = filters[el.dataset.f] || '';
+  el.addEventListener('input', () => {
+    filters[el.dataset.f] = el.value;
+    if (!el.value) delete filters[el.dataset.f];
+    localStorage.setItem('kr-filters', JSON.stringify(filters));
+    const shown = new Set(visible().map(a => a.id));
+    selected = new Set([...selected].filter(id => shown.has(id)));  // never rotate a row you can't see
+    render();
+  });
+});
+$('#f-clear').onclick = () => {
+  filters = {}; localStorage.removeItem('kr-filters');
+  document.querySelectorAll('[data-f]').forEach(el => el.value = '');
+  render();
+};
+document.querySelectorAll('th[data-sort]').forEach(th => th.onclick = () => {
+  const col = th.dataset.sort;
+  sort = sort.col !== col ? {col, dir: 1} : sort.dir === 1 ? {col, dir: -1} : {col: null, dir: 1};  // asc, desc, off
+  localStorage.setItem('kr-sort', JSON.stringify(sort));
+  render();
+});
+
 function render() {
-  $('#rows').innerHTML = state.apps.map(a => {
+  fillFilterOptions();
+  const rows = visible();
+  document.querySelectorAll('[data-f]').forEach(el => el.classList.toggle('on', !!filters[el.dataset.f]));
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.querySelector('.arr')?.remove();
+    if (th.dataset.sort === sort.col) th.insertAdjacentHTML('beforeend', `<span class="arr">${sort.dir === 1 ? '▲' : '▼'}</span>`);
+  });
+  $('#shown').innerHTML = rows.length < state.apps.length
+    ? `<b>Showing ${rows.length} of ${state.apps.length}</b> (filtered). ` : '';
+  $('#rows').innerHTML = (rows.length ? '' : `<tr><td colspan="10">No keys match these filters. <a href="#" id="f-clear2">Clear filters</a></td></tr>`) + rows.map(a => {
     const auto = a.kind === 'auto', sel = selected.has(a.id);
     const keyCell = auto
       ? (a.fp ? `<span class="fp" data-h="${a.fp.hash}" title="Select all apps on this key">${esc(a.fp.display)}</span>` : '—')
@@ -195,6 +295,8 @@ function render() {
       <td>${auto ? '' : `<button class="b out sm" data-done="${esc(a.id)}">Mark done…</button> `}<button class="b out sm" data-edit="${esc(a.id)}">Edit…</button></td>
     </tr>`;
   }).join('');
+  const c2 = $('#f-clear2');
+  if (c2) c2.onclick = e => { e.preventDefault(); $('#f-clear').onclick(); };
   $('#log').innerHTML = state.log.map(l => `<div>${esc(l.t.replace('T', ' '))}  ${esc(l.msg)}</div>`).join('') || '<div>No events yet.</div>';
   const due = state.apps.filter(a => a.status !== 'ok');
   const next = state.apps.filter(a => a.due_date).sort((x, y) => x.due_date.localeCompare(y.due_date))[0];
@@ -209,7 +311,7 @@ function syncControls() {
   $('#go').textContent = `Rotate Selected (${selected.size})`;
   $('#go').disabled = busy || !selected.size || !$('#key').value.trim();
   $('#test').disabled = busy || !$('#key').value.trim();
-  const autos = state.apps.filter(a => a.kind === 'auto' && a.fp);
+  const autos = visible().filter(a => a.kind === 'auto' && a.fp);
   $('#all').checked = autos.length && autos.every(a => selected.has(a.id));
   $('#cname').placeholder = selected.size === 1 ? [...selected][0] : 'e.g. stockpile';
   const p = selProvider();
@@ -236,7 +338,7 @@ $('#rows').addEventListener('click', e => {
   render();
 });
 $('#all').onchange = e => {
-  selected = new Set(e.target.checked ? state.apps.filter(a => a.kind === 'auto' && a.fp).map(a => a.id) : []);
+  selected = new Set(e.target.checked ? visible().filter(a => a.kind === 'auto' && a.fp).map(a => a.id) : []);
   render();
 };
 $('#key').oninput = syncControls;
